@@ -42,7 +42,20 @@
 
 #include "cap_ffmpeg_legacy_api.hpp"
 
+#ifdef HAVE_DIRECTX
+#include "opencv2/core/directx.hpp"
+#endif
+#ifdef HAVE_VA_INTEL
+#include "opencv2/core/va_intel.hpp"
+#endif
+
 using namespace cv;
+
+#define CV_TRACE(_EXPR)  \
+{                           \
+    CV_INSTRUMENT_REGION_NAME(#_EXPR); \
+    _EXPR; \
+}
 
 #if !(defined(_WIN32) || defined(WINCE))
 # include <pthread.h>
@@ -85,6 +98,17 @@ extern "C" {
 
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
+
+#include <libavutil/hwcontext.h>
+#ifdef HAVE_DIRECTX
+#include <libavutil/hwcontext_d3d11va.h>
+#endif
+#ifdef HAVE_VA
+#include <libavutil/hwcontext_vaapi.h>
+#endif
+#ifdef HAVE_MFX1
+#include <libavutil/hwcontext_qsv.h>
+#endif
 
 #ifdef __cplusplus
 }
@@ -453,6 +477,80 @@ static AVRational _opencv_ffmpeg_get_sample_aspect_ratio(AVStream *stream)
 #endif
 }
 
+static struct {
+    VideoAccelerationType type;
+    AVHWDeviceType ffmpeg_type;
+} hw_device_types[] = {
+#ifdef HAVE_MFX1
+        { IDEO_ACCELERATION_QSV, AV_HWDEVICE_TYPE_QSV },
+#endif
+#ifdef _WIN32
+        { IDEO_ACCELERATION_D3D11, AV_HWDEVICE_TYPE_D3D11VA },
+#else
+        { VIDEO_ACCELERATION_VAAPI, AV_HWDEVICE_TYPE_VAAPI },
+#endif
+};
+
+static AVBufferRef *_opencv_ffmpeg_create_hw_device(VideoAccelerationType *hw_type, int* hw_device) {
+    if (*hw_type == VIDEO_ACCELERATION_NONE)
+        return NULL;
+
+    char device[128] = "";
+    for (size_t i = 0; i < sizeof(hw_device_types) / sizeof(hw_device_types[0]); i++) {
+        if (!(*hw_type & hw_device_types[i].type))
+            continue;
+        AVHWDeviceType device_type = hw_device_types[i].ffmpeg_type;
+        char *pdevice = NULL;
+        if (*hw_device >= 0 && *hw_device < 100000) {
+            if (device_type == AV_HWDEVICE_TYPE_VAAPI)
+                snprintf(device, sizeof(device), "/dev/dri/renderD%d", 128 + *hw_device);
+            else
+                snprintf(device, sizeof(device), "%d", *hw_device);
+            pdevice = device;
+        }
+        AVBufferRef *hw_device_ctx = NULL;
+        if (av_hwdevice_ctx_create(&hw_device_ctx, device_type, pdevice, NULL, 0) == 0) {
+            *hw_type = hw_device_types[i].type;
+            if (*hw_device < 0)
+                *hw_device = 0;
+            return hw_device_ctx;
+        }
+    }
+    return NULL;
+}
+
+static void _opencv_ffmpeg_bind_hw_device(AVBufferRef *ctx) {
+    if (!ctx)
+        return;
+    AVHWDeviceContext *hw_device_ctx = (AVHWDeviceContext *) ctx->data;
+    if (!hw_device_ctx)
+        return;
+#ifdef HAVE_VA
+    if (hw_device_ctx->type == AV_HWDEVICE_TYPE_VAAPI || hw_device_ctx->type == AV_HWDEVICE_TYPE_QSV) {
+        VADisplay va_display = NULL;
+        if (hw_device_ctx->type == AV_HWDEVICE_TYPE_VAAPI) {
+            va_display = ((AVVAAPIDeviceContext *) hw_device_ctx->hwctx)->display;
+        }
+#ifdef HAVE_MFX1
+        if (hw_device_ctx->type == AV_HWDEVICE_TYPE_QSV) {
+            mfxSession session = ((AVQSVDeviceContext *) hw_device_ctx->hwctx)->session;
+            MFXVideoCORE_GetHandle(session, MFX_HANDLE_VA_DISPLAY, &va_display);
+        }
+#endif // HAVE_MFX1
+#ifdef HAVE_VA_INTEL
+        if (va_display) {
+            va_intel::ocl::initializeContextFromVA(va_display);
+        }
+#endif // HAVE_VA_INTEL
+    }
+#endif // HAVE_VA
+#if defined(HAVE_DIRECTX) && defined(HAVE_OPENCL)
+    if (hw_device_ctx && hw_device_ctx->type == AV_HWDEVICE_TYPE_D3D11VA) {
+        ID3D11Device *device = ((AVD3D11VADeviceContext *) hw_device_ctx->hwctx)->device;
+        directx::ocl::initializeContextFromD3D11Device(device);
+    }
+#endif
+}
 
 struct CvCapture_FFMPEG
 {
@@ -463,6 +561,7 @@ struct CvCapture_FFMPEG
     bool setProperty(int, double);
     bool grabFrame();
     bool retrieveFrame(int, unsigned char** data, int* step, int* width, int* height, int* cn);
+    bool retrieveHWFrame(cv::OutputArray frame);
     void rotateFrame(cv::Mat &mat) const;
 
     void init();
@@ -519,9 +618,11 @@ struct CvCapture_FFMPEG
     AVPacket packet_filtered;
 #if LIBAVFORMAT_BUILD >= CALC_FFMPEG_VERSION(58, 20, 100)
     AVBSFContext* bsfc;
- #else
+#else
     AVBitStreamFilterContext* bsfc;
 #endif
+    VideoAccelerationType hw_type;
+    int hw_device;
 };
 
 void CvCapture_FFMPEG::init()
@@ -865,6 +966,7 @@ bool CvCapture_FFMPEG::open( const char* _filename )
     bool valid = false;
 
     close();
+    filename = strdup(_filename);
 
 #if USE_AV_INTERRUPT_CALLBACK
     /* interrupt callback */
@@ -960,6 +1062,9 @@ bool CvCapture_FFMPEG::open( const char* _filename )
             } else {
                 codec = avcodec_find_decoder_by_name(av_dict_get(dict, "video_codec", NULL, 0)->value);
             }
+
+            enc->hw_device_ctx = _opencv_ffmpeg_create_hw_device(&hw_type, &hw_device);
+
             if (!codec || avcodec_open2(enc, codec, NULL) < 0)
                 goto exit_func;
 
@@ -997,6 +1102,10 @@ exit_func:
 
     if( !valid )
         close();
+
+    if (valid && video_st->codec->hw_device_ctx) {
+        _opencv_ffmpeg_bind_hw_device(video_st->codec->hw_device_ctx);
+    }
 
     return valid;
 }
@@ -1301,6 +1410,63 @@ bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* 
     return true;
 }
 
+bool CvCapture_FFMPEG::retrieveHWFrame(cv::OutputArray output)
+{
+    CV_INSTRUMENT_REGION();
+    if (!video_st->codec->hw_device_ctx) {
+        return false;
+    }
+    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext *)video_st->codec->hw_device_ctx->data;
+    if (!hw_device_ctx)
+        return false;
+
+#ifdef HAVE_VA
+    if (picture->format == AV_PIX_FMT_VAAPI || picture->format == AV_PIX_FMT_QSV) {
+        VADisplay va_display = 0;
+        void* va_surface = 0;
+        if (picture->format == AV_PIX_FMT_VAAPI) {
+            va_display = ((AVVAAPIDeviceContext *) hw_device_ctx->hwctx)->display;
+            va_surface = picture->data[3]; // As defined by AV_PIX_FMT_VAAPI
+        }
+#ifdef HAVE_MFX1
+        if (picture->format == AV_PIX_FMT_QSV) {
+            mfxSession session = ((AVQSVDeviceContext *) hw_device_ctx->hwctx)->session;
+            mfxFrameSurface1 *surface = (mfxFrameSurface1*)picture->data[3]; // As defined by AV_PIX_FMT_QSV
+            MFXVideoCORE_GetHandle(session, MFX_HANDLE_VA_DISPLAY, &va_display);
+            va_surface = surface->Data.MemId;
+        }
+#endif
+#ifdef HAVE_VA_INTEL
+        if (va_display) {
+            // color conversion NV12->BGRA via OpenCL extension for VAAPI
+            // fallback is to map VASurface to system memory and run color conversion on CPU
+            Size size(frame.width, frame.height);
+            va_intel::convertFromVASurface(va_display, (VASurfaceID)(size_t)va_surface, size, output);
+            return true;
+        }
+#endif
+    }
+#endif
+
+#ifdef HAVE_DIRECTX
+    if (hw_device_ctx->type == AV_HWDEVICE_TYPE_D3D11VA && picture->format == AV_PIX_FMT_D3D11) {
+        ID3D11Texture2D* pD3D11Texture2D = picture->data[0]; // As defined by AV_PIX_FMT_D3D11
+        if (output.isUMat()) { // try color conversion NV12->BGRA via media driver
+            output.create(frame.height, frame.width, CV_8UC4);
+            UMat u = output.getUMat();
+            if (VideoAcceleratedColorConversion(directx::getD3D11Allocator(va_display), va_surface, u)) {
+                return true;
+            }
+        }
+        // color conversion NV12->BGRA via OpenCL extension for DirectX 11
+        directx::convertFromD3D11Texture2D(pD3D11Texture2D, output);
+        return true;
+    }
+#endif
+
+    return false;
+}
+
 double CvCapture_FFMPEG::getProperty( int property_id ) const
 {
     if( !video_st ) return 0;
@@ -1369,6 +1535,10 @@ double CvCapture_FFMPEG::getProperty( int property_id ) const
 #else
         return 0;
 #endif
+    case CAP_PROP_HW_ACCELERATION:
+        return static_cast<double>(hw_type);
+    case CAP_PROP_HW_DEVICE:
+        return static_cast<double>(hw_device);
     default:
         break;
     }
@@ -1556,6 +1726,16 @@ bool CvCapture_FFMPEG::setProperty( int property_id, double value )
         rotation_auto = 0;
         return false;
 #endif
+    case CAP_PROP_HW_ACCELERATION:
+        if (!sizeof(hw_device_types))
+            return false;
+        hw_type = (VideoAccelerationType)value;
+        return open(filename); // reopen file. // TODO: reopen camera
+    case CAP_PROP_HW_DEVICE:
+        if (!sizeof(hw_device_types))
+            return false;
+        hw_device = (int)value;
+        return open(filename); // reopen file. // TODO: reopen camera
     default:
         return false;
     }
@@ -1571,6 +1751,8 @@ struct CvVideoWriter_FFMPEG
                double fps, int width, int height, bool isColor );
     void close();
     bool writeFrame( const unsigned char* data, int step, int width, int height, int cn, int origin );
+    bool writeUMat(const cv::UMat& umat);
+    bool setProperty(int, double);
 
     void init();
 
@@ -1590,6 +1772,11 @@ struct CvVideoWriter_FFMPEG
     int               frame_idx;
     bool              ok;
     struct SwsContext *img_convert_ctx;
+    AVBufferRef     * hw_device_ctx;
+    const char      * _filename;
+    int             _fourcc;
+    double          _fps;
+    bool            _is_color;
 };
 
 static const char * icvFFMPEGErrStr(int err)
@@ -1650,6 +1837,11 @@ void CvVideoWriter_FFMPEG::init()
     img_convert_ctx = 0;
     frame_width = frame_height = 0;
     frame_idx = 0;
+    hw_device_ctx = 0;
+    _filename = 0;
+    _fourcc = 0;
+    _fps = 0;
+    _is_color = true;
     ok = false;
 }
 
@@ -1718,7 +1910,11 @@ static AVStream *icv_add_video_stream_FFMPEG(AVFormatContext *oc,
     }
 
     //if(codec_tag) c->codec_tag=codec_tag;
-    codec = avcodec_find_encoder(c->codec_id);
+    if (pixel_format == AV_PIX_FMT_VAAPI) {
+        codec = avcodec_find_encoder_by_name("h264_vaapi");
+    } else {
+        codec = avcodec_find_encoder(c->codec_id);
+    }
 
     c->codec_type = AVMEDIA_TYPE_VIDEO;
 
@@ -1854,17 +2050,20 @@ static int icv_av_write_frame_FFMPEG( AVFormatContext * oc, AVStream * video_st,
     {
         /* encode the image */
 #if USE_AV_SEND_FRAME_API
-        ret = avcodec_send_frame(c, picture);
+        CV_TRACE(ret = avcodec_send_frame(c, picture));
         while (ret >= 0)
         {
             AVPacket* pkt = av_packet_alloc();
             pkt->stream_index = video_st->index;
-            ret = avcodec_receive_packet(c, pkt);
+            CV_TRACE(ret = avcodec_receive_packet(c, pkt));
 
             if(!ret)
             {
                 av_packet_rescale_ts(pkt, c->time_base, video_st->time_base);
-                ret = av_write_frame(oc, pkt);
+                CV_TRACE(ret = av_write_frame(oc, pkt));
+                if (ret < 0) {
+                    fprintf(stderr, "Could not write to output file: %s\n", icvFFMPEGErrStr(ret));
+                }
                 av_packet_free(&pkt);
                 continue;
             }
@@ -2001,6 +2200,61 @@ bool CvVideoWriter_FFMPEG::writeFrame( const unsigned char* data, int step, int 
     return ret;
 }
 
+bool CvVideoWriter_FFMPEG::writeUMat(const cv::UMat& umat) {
+    if (!video_st->codec->hw_device_ctx)
+        return false;
+    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext *)video_st->codec->hw_device_ctx->data;
+
+    // Get AVFrame
+    int err;
+    AVFrame *hw_frame;
+    if (!(hw_frame = av_frame_alloc()))
+        return false;
+    if (av_hwframe_get_buffer(video_st->codec->hw_frames_ctx, hw_frame, 0) < 0)
+        return false;
+
+    // Copy into AVFrame
+#ifdef HAVE_VA_INTEL
+    if (hw_device_ctx->type == AV_HWDEVICE_TYPE_VAAPI || hw_device_ctx->type == AV_HWDEVICE_TYPE_QSV) {
+        VADisplay va_display = NULL;
+        if (hw_device_ctx->type == AV_HWDEVICE_TYPE_VAAPI) {
+            va_display = ((AVVAAPIDeviceContext *) hw_device_ctx->hwctx)->display;
+        }
+#ifdef HAVE_MFX1
+        if (hw_device_ctx->type == AV_HWDEVICE_TYPE_QSV) {
+            mfxSession session = ((AVQSVDeviceContext *) hw_device_ctx->hwctx)->session;
+            MFXVideoCORE_GetHandle(session, MFX_HANDLE_VA_DISPLAY, &va_display);
+        }
+#endif
+        if (va_display) {
+            VASurfaceID hw_frame_surface = (size_t) hw_frame->data[3];
+            Size size(frame_width, frame_height);
+            va_intel::convertToVASurface(va_display, umat, hw_frame_surface, size);
+        } else {
+            return false;
+        }
+    } else
+#endif
+#ifdef HAVE_DIRECTX
+    if (hw_device_ctx->type == AV_HWDEVICE_TYPE_D3D11VA || hw_device_ctx->type == AV_HWDEVICE_TYPE_QSV) {
+        IDevice* device = NULL;
+    } else
+#endif
+    {
+        return false;
+    }
+
+    // encode
+    hw_frame->pts = frame_idx;
+    bool ret = icv_av_write_frame_FFMPEG( oc, video_st, outbuf, outbuf_size, hw_frame) >= 0;
+    frame_idx++;
+
+    // free
+    av_frame_free(&hw_frame);
+
+    return true;
+}
+
 /// close video output stream and free associated memory
 void CvVideoWriter_FFMPEG::close()
 {
@@ -2110,6 +2364,35 @@ static inline void cv_ff_codec_tag_dump(const AVCodecTag *const *tags)
     }
 }
 
+static int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx)
+{
+    AVBufferRef *hw_frames_ref;
+    AVHWFramesContext *frames_ctx = NULL;
+    int err = 0;
+
+    if (!(hw_frames_ref = av_hwframe_ctx_alloc(hw_device_ctx))) {
+        fprintf(stderr, "Failed to create VAAPI frame context.\n");
+        return -1;
+    }
+    frames_ctx = (AVHWFramesContext *)(hw_frames_ref->data);
+    frames_ctx->format    = AV_PIX_FMT_VAAPI;
+    frames_ctx->sw_format = AV_PIX_FMT_NV12;
+    frames_ctx->width     = ctx->width;
+    frames_ctx->height    = ctx->height;
+    frames_ctx->initial_pool_size = 20;
+    if ((err = av_hwframe_ctx_init(hw_frames_ref)) < 0) {
+        fprintf(stderr, "Failed to initialize VAAPI frame context.");
+        av_buffer_unref(&hw_frames_ref);
+        return err;
+    }
+    ctx->hw_frames_ctx = av_buffer_ref(hw_frames_ref);
+    if (!ctx->hw_frames_ctx)
+        err = AVERROR(ENOMEM);
+
+    av_buffer_unref(&hw_frames_ref);
+    return err;
+}
+
 /// Create a video writer object that uses FFMPEG
 bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
                                  double fps, int width, int height, bool is_color )
@@ -2119,7 +2402,9 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
     int err, codec_pix_fmt;
     double bitrate_scale = 1;
 
+    AVBufferRef *hw_ctx = hw_device_ctx;
     close();
+    hw_device_ctx = hw_ctx;
 
     // check arguments
     if( !filename )
@@ -2319,6 +2604,10 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
         break;
     }
 
+    if (hw_device_ctx) {
+        codec_pix_fmt = AV_PIX_FMT_VAAPI;
+    }
+
     double bitrate = std::min(bitrate_scale*fps*width*height, (double)INT_MAX/2);
 
     // TODO -- safe to ignore output audio stream?
@@ -2343,8 +2632,14 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
     AVCodecContext* c  = video_st->codec;
 
     c->codec_tag = fourcc;
+
     /* find the video encoder */
-    AVCodec* codec = avcodec_find_encoder(c->codec_id);
+    AVCodec* codec;
+    if (hw_device_ctx) {
+        codec = avcodec_find_encoder_by_name("h264_vaapi");
+    } else {
+        codec = avcodec_find_encoder(c->codec_id);
+    }
     if (!codec) {
         fprintf(stderr, "Could not find encoder for codec id %d: %s\n", c->codec_id,
                 icvFFMPEGErrStr(AVERROR_ENCODER_NOT_FOUND));
@@ -2356,6 +2651,11 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
     lbit_rate = std::min(lbit_rate, (int64_t)INT_MAX);
     c->bit_rate_tolerance = (int)lbit_rate;
     c->bit_rate = (int)lbit_rate;
+
+    if (hw_device_ctx) {
+        c->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+        set_hwframe_ctx(c, hw_device_ctx);
+    }
 
     /* open the codec */
     if ((err= avcodec_open2(c, codec, NULL)) < 0) {
@@ -2380,9 +2680,11 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
     need_color_convert = (c->pix_fmt != input_pix_fmt);
 
     /* allocate the encoded raw picture */
-    picture = icv_alloc_picture_FFMPEG(c->pix_fmt, c->width, c->height, need_color_convert);
-    if (!picture) {
-        return false;
+    if (!hw_device_ctx) {
+        picture = icv_alloc_picture_FFMPEG(c->pix_fmt, c->width, c->height, need_color_convert);
+        if (!picture) {
+            return false;
+        }
     }
 
     /* if the output format is not our input format, then a temporary
@@ -2417,12 +2719,24 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
     frame_width = width;
     frame_height = height;
     frame_idx = 0;
+    this->_filename = strdup(filename);
+    this->_fourcc = fourcc;
+    this->_fps = fps;
+    this->_is_color = is_color;
     ok = true;
 
     return true;
 }
 
-
+bool CvVideoWriter_FFMPEG::setProperty(int property_id, double value) {
+    if (property_id == CAP_PROP_MODE) {
+        av_hwdevice_ctx_create(&hw_device_ctx, static_cast<AVHWDeviceType>(value), NULL, NULL, 0);
+        if (!hw_device_ctx)
+            return false;
+        return open(_filename, _fourcc, _fps, frame_width, frame_height, _is_color); // reopen file. // TODO: reopen camera
+    }
+    return false;
+}
 
 CvCapture_FFMPEG* cvCreateFileCapture_FFMPEG( const char* filename )
 {

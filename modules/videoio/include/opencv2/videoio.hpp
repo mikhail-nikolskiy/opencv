@@ -182,6 +182,8 @@ enum VideoCaptureProperties {
        CAP_PROP_BITRATE       =47, //!< (read-only) Video bitrate in kbits/s
        CAP_PROP_ORIENTATION_META=48, //!< (read-only) Frame rotation defined by stream meta (applicable for FFmpeg back-end only)
        CAP_PROP_ORIENTATION_AUTO=49, //!< if true - rotates output frames of CvCapture considering video file's metadata  (applicable for FFmpeg back-end only) (https://github.com/opencv/opencv/issues/15499)
+       CAP_PROP_HW_ACCELERATION=50, //!< Enable hardware accelerated decode/encode. See
+       CAP_PROP_HW_DEVICE      =51, //!< Hardware device index (select GPU if multiple available)
 #ifndef CV_DOXYGEN
        CV__CAP_PROP_LATEST
 #endif
@@ -203,6 +205,17 @@ enum VideoWriterProperties {
 
 //! @addtogroup videoio_flags_others
 //! @{
+
+//! Video Acceleration type (used as value in CAP_PROP_HW_ACCELERATION)
+// (in case of FFMPEG backend, it translated to https://github.com/FFmpeg/FFmpeg/blob/master/libavutil/hwcontext.h#L27)
+enum VideoAccelerationType  {
+    VIDEO_ACCELERATION_NONE     = 0,
+    VIDEO_ACCELERATION_ANY      = 0xFFFFFFFF,
+
+    VIDEO_ACCELERATION_D3D11    = 1 << 1, // DirectX 11
+    VIDEO_ACCELERATION_VAAPI    = 1 << 2, // VAAPI
+    VIDEO_ACCELERATION_QSV      = 1 << 3, // Intel Quick Sync Video
+};
 
 /** @name IEEE 1394 drivers
     @{
