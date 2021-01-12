@@ -767,7 +767,6 @@ bool CvCapture_MSMF::configureHW(bool enable)
                     {
                         captureMode = MODE_HW;
 #ifdef HAVE_DIRECTX_NV12
-                        convertFormat = false; // use native NV12 format
                         cv::directx::ocl::initializeContextFromD3D11Device(D3DDev.Get());
 #endif
                         return reopen ? (prevcam >= 0 ? open(prevcam) : open(prevfile.c_str())) : true;
@@ -1042,7 +1041,7 @@ bool CvCapture_MSMF::retrieveFrame(int, cv::OutputArray frame)
         DWORD maxsize = 0, cursize = 0;
 
 #ifdef HAVE_DIRECTX_NV12
-        if (frame.isUMat() && captureMode == MODE_HW) {
+        if (captureMode == MODE_HW && convertFormat == false) {
             _ComPtr<IMFDXGIBuffer> pMFDXGIBuffer;
             if (SUCCEEDED(buf.As<IMFDXGIBuffer>(pMFDXGIBuffer)))
             {
@@ -1354,10 +1353,16 @@ bool CvCapture_MSMF::setProperty( int property_id, double value )
             else
                 return true;
         case cv::CAP_PROP_HW_ACCELERATION:
-            if (((int)value) & cv::VIDEO_ACCELERATION_D3D11)
+            if (((int)value) & cv::VIDEO_ACCELERATION_D3D11) {
+                convertFormat = false; // use native NV12 format
+                if (D3DMgr)
+                    D3DMgr.Release();
+                if (D3DDev)
+                    D3DDev.Release();
                 return configureHW(true);
-            else
+            } else {
                 return configureHW(false);
+            }
         case CV_CAP_PROP_FOURCC:
             return configureOutput(newFormat, (int)cvRound(value));
         case CV_CAP_PROP_FORMAT:
