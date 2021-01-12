@@ -25,9 +25,14 @@
 #include <tchar.h>
 #include <strsafe.h>
 #include <mfreadwrite.h>
+
+#include "opencv2/videoio.hpp"
 #ifdef HAVE_MSMF_DXVA
 #include <d3d11.h>
 #include <d3d11_4.h>
+#endif
+#ifdef HAVE_DIRECTX
+#include "opencv2/core/directx.hpp"
 #endif
 #include <new>
 #include <map>
@@ -47,6 +52,7 @@
 #pragma comment(lib, "Mfreadwrite")
 #ifdef HAVE_MSMF_DXVA
 #pragma comment(lib, "d3d11")
+#pragma comment(lib, "dxgi")
 // MFCreateDXGIDeviceManager() is available since Win8 only.
 // To avoid OpenCV loading failure on Win7 use dynamic detection of this symbol.
 // Details: https://github.com/opencv/opencv/issues/11858
@@ -601,6 +607,7 @@ protected:
     cv::String filename;
     int camid;
     MSMFCapture_Mode captureMode;
+    int hwDeviceIndex;
 #ifdef HAVE_MSMF_DXVA
     _ComPtr<ID3D11Device> D3DDev;
     _ComPtr<IMFDXGIDeviceManager> D3DMgr;
@@ -624,6 +631,7 @@ CvCapture_MSMF::CvCapture_MSMF():
     filename(""),
     camid(-1),
     captureMode(MODE_SW),
+    hwDeviceIndex(-1),
 #ifdef HAVE_MSMF_DXVA
     D3DDev(NULL),
     D3DMgr(NULL),
@@ -732,10 +740,19 @@ bool CvCapture_MSMF::configureHW(bool enable)
     close();
     if (enable)
     {
+        _ComPtr<IDXGIAdapter> pAdapter;
+        if (hwDeviceIndex >= 0) {
+            _ComPtr<IDXGIFactory2> pDXGIFactory;
+            if (CreateDXGIFactory(__uuidof(IDXGIFactory2), (void**)& pDXGIFactory)) {
+                if (FAILED(pDXGIFactory->EnumAdapters(hwDeviceIndex, &pAdapter))) {
+                    return false;
+                }
+            }
+        }
         D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
             D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0,
             D3D_FEATURE_LEVEL_9_3,  D3D_FEATURE_LEVEL_9_2, D3D_FEATURE_LEVEL_9_1 };
-        if (SUCCEEDED(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+        if (SUCCEEDED(D3D11CreateDevice(pAdapter.Get(), D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
             levels, sizeof(levels) / sizeof(*levels), D3D11_SDK_VERSION, &D3DDev, NULL, NULL)))
         {
             // NOTE: Getting ready for multi-threaded operation
@@ -750,6 +767,9 @@ bool CvCapture_MSMF::configureHW(bool enable)
                     if (SUCCEEDED(D3DMgr->ResetDevice(D3DDev.Get(), mgrRToken)))
                     {
                         captureMode = MODE_HW;
+#ifdef HAVE_DIRECTX_NV12
+                        cv::directx::ocl::initializeContextFromD3D11Device(D3DDev.Get());
+#endif
                         return reopen ? (prevcam >= 0 ? open(prevcam) : open(prevfile.c_str())) : true;
                     }
                     D3DMgr.Release();
@@ -1021,6 +1041,21 @@ bool CvCapture_MSMF::retrieveFrame(int, cv::OutputArray frame)
         LONG pitch = 0;
         DWORD maxsize = 0, cursize = 0;
 
+#ifdef HAVE_DIRECTX_NV12
+        if (frame.isUMat() && captureMode == MODE_HW) {
+            _ComPtr<IMFDXGIBuffer> pMFDXGIBuffer;
+            if (SUCCEEDED(buf.As<IMFDXGIBuffer>(pMFDXGIBuffer)))
+            {
+                _ComPtr<ID3D11Texture2D> texture2d;
+                if (SUCCEEDED(pMFDXGIBuffer->GetResource(__uuidof(ID3D11Texture2D), (LPVOID*)(&texture2d))))
+                {
+                    cv::directx::convertFromD3D11Texture2D(texture2d.Get(), frame);
+                    return !frame.empty();
+                }
+            }
+        }
+#endif
+
         // "For 2-D buffers, the Lock2D method is more efficient than the Lock method"
         // see IMFMediaBuffer::Lock method documentation: https://msdn.microsoft.com/en-us/library/windows/desktop/bb970366(v=vs.85).aspx
         _ComPtr<IMF2DBuffer> buffer2d;
@@ -1151,7 +1186,11 @@ double CvCapture_MSMF::getProperty( int property_id ) const
         switch (property_id)
         {
         case CV_CAP_PROP_MODE:
-                return captureMode;
+            return captureMode;
+        case cv::CAP_PROP_HW_DEVICE:
+            return hwDeviceIndex;
+        case cv::CAP_PROP_HW_ACCELERATION:
+            return (captureMode == MODE_HW) ? cv::VIDEO_ACCELERATION_D3D11 : 0;
         case CV_CAP_PROP_CONVERT_RGB:
                 return convertFormat ? 1 : 0;
         case CV_CAP_PROP_SAR_NUM:
@@ -1308,6 +1347,17 @@ bool CvCapture_MSMF::setProperty( int property_id, double value )
             default:
                 return false;
             }
+        case cv::CAP_PROP_HW_DEVICE:
+            hwDeviceIndex = (int)value;
+            if (captureMode == MODE_HW)
+                return configureHW(true);
+            else
+                return true;
+        case cv::CAP_PROP_HW_ACCELERATION:
+            if (((int)value) & cv::VIDEO_ACCELERATION_D3D11)
+                return configureHW(true);
+            else
+                return configureHW(false);
         case CV_CAP_PROP_FOURCC:
             return configureOutput(newFormat, (int)cvRound(value));
         case CV_CAP_PROP_FORMAT:
