@@ -743,10 +743,9 @@ bool CvCapture_MSMF::configureHW(bool enable)
         _ComPtr<IDXGIAdapter> pAdapter;
         if (hwDeviceIndex >= 0) {
             _ComPtr<IDXGIFactory2> pDXGIFactory;
-            if (CreateDXGIFactory(__uuidof(IDXGIFactory2), (void**)& pDXGIFactory)) {
-                if (FAILED(pDXGIFactory->EnumAdapters(hwDeviceIndex, &pAdapter))) {
-                    return false;
-                }
+            if (FAILED(CreateDXGIFactory(__uuidof(IDXGIFactory2), (void**)& pDXGIFactory)) ||
+                FAILED(pDXGIFactory->EnumAdapters(hwDeviceIndex, &pAdapter))) {
+                return false;
             }
         }
         D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
@@ -768,6 +767,7 @@ bool CvCapture_MSMF::configureHW(bool enable)
                     {
                         captureMode = MODE_HW;
 #ifdef HAVE_DIRECTX_NV12
+                        convertFormat = false; // use native NV12 format
                         cv::directx::ocl::initializeContextFromD3D11Device(D3DDev.Get());
 #endif
                         return reopen ? (prevcam >= 0 ? open(prevcam) : open(prevfile.c_str())) : true;
