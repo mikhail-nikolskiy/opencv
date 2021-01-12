@@ -182,7 +182,7 @@ enum VideoCaptureProperties {
        CAP_PROP_BITRATE       =47, //!< (read-only) Video bitrate in kbits/s
        CAP_PROP_ORIENTATION_META=48, //!< (read-only) Frame rotation defined by stream meta (applicable for FFmpeg back-end only)
        CAP_PROP_ORIENTATION_AUTO=49, //!< if true - rotates output frames of CvCapture considering video file's metadata  (applicable for FFmpeg back-end only) (https://github.com/opencv/opencv/issues/15499)
-       CAP_PROP_HW_ACCELERATION=50, //!< Enable hardware accelerated decode/encode. See
+       CAP_PROP_HW_ACCELERATION=50, //!< Enable hardware accelerated decode/encode. Value is mask of enum VideoAccelerationType.
        CAP_PROP_HW_DEVICE      =51, //!< Hardware device index (select GPU if multiple available)
 #ifndef CV_DOXYGEN
        CV__CAP_PROP_LATEST
