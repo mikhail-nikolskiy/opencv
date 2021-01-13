@@ -658,6 +658,8 @@ void CvCapture_FFMPEG::init()
     memset(&packet_filtered, 0, sizeof(packet_filtered));
     av_init_packet(&packet_filtered);
     bsfc = NULL;
+    hw_type = cv::VIDEO_ACCELERATION_NONE;
+    hw_device = -1;
 }
 
 
@@ -728,7 +730,11 @@ void CvCapture_FFMPEG::close()
 #endif
     }
 
+    cv::VideoAccelerationType _hw_type = hw_type;
+    int _hw_device = hw_device;
     init();
+    hw_type = _hw_type;
+    hw_device = _hw_device;
 }
 
 
@@ -1735,7 +1741,11 @@ bool CvCapture_FFMPEG::setProperty( int property_id, double value )
         if (!sizeof(hw_device_types))
             return false;
         hw_device = (int)value;
-        return open(filename); // reopen file. // TODO: reopen camera
+        if (hw_type) {
+            return open(filename);
+        } else {
+            return true;
+        }
     default:
         return false;
     }
