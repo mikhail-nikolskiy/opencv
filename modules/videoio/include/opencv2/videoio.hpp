@@ -198,7 +198,9 @@ enum VideoWriterProperties {
   VIDEOWRITER_PROP_NSTRIPES = 3,   //!< Number of stripes for parallel encoding. -1 for auto detection.
   VIDEOWRITER_PROP_IS_COLOR = 4,   //!< If it is not zero, the encoder will expect and encode color frames, otherwise it
                                    //!< will work with grayscale frames.
-  VIDEOWRITER_PROP_DEPTH = 5       //!< Defaults to CV_8U.
+  VIDEOWRITER_PROP_DEPTH = 5,      //!< Defaults to CV_8U.
+  VIDEOWRITER_PROP_HW_ACCELERATION = 6, //!< Enable hardware accelerated decode/encode. Value is mask of enum VideoAccelerationType.
+  VIDEOWRITER_PROP_HW_DEVICE       = 7  //!< Hardware device index (select GPU if multiple available)
 };
 
 //! @} videoio_flags_base
