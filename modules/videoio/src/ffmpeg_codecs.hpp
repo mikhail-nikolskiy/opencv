@@ -299,18 +299,3 @@ const AVCodecTag codec_bmp_tags[] = {
     { AV_CODEC_ID_NONE, 0 },
 };
 
-const struct {
-    int codec_id;
-    const char *string;
-} ffmpeg_codec_id_string[] = {
-    { AV_CODEC_ID_H263, "h263" },
-    { AV_CODEC_ID_H264, "h264" },
-    { AV_CODEC_ID_HEVC, "hevc" },
-    { AV_CODEC_ID_MPEG2VIDEO, "mpeg2" },
-    { AV_CODEC_ID_MPEG4, "mpeg4" },
-    { AV_CODEC_ID_VC1, "vc1" },
-    { AV_CODEC_ID_VP8, "vp8" },
-    { AV_CODEC_ID_VP9, "vp9" },
-    { AV_CODEC_ID_WMV3, "wmv3" },
-    { AV_CODEC_ID_AV1, "av1" }
-};
