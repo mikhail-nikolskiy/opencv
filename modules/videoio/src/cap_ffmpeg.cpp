@@ -180,8 +180,8 @@ public:
             return;
         CV_Assert(image.depth() == CV_8U);
 
-        if (ffmpegWriter->video_st->codec->hw_device_ctx) { // TODO
-            ffmpegWriter->writeHWFrame(image.getUMat());
+        if (ffmpegWriter->video_st->codec->hw_device_ctx) {
+            ffmpegWriter->writeHWFrame(image);
         } else {
             icvWriteFrame_FFMPEG_p(ffmpegWriter, (const uchar *) image.getMat().ptr(), (int) image.step(), image.cols(),
                                    image.rows(), image.channels(), 0);

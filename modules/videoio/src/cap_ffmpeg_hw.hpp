@@ -89,14 +89,9 @@ static struct {
     VideoAccelerationType type;
     AVHWDeviceType ffmpeg_type;
 } hw_device_types[] = {
-#ifdef HAVE_MFX
-        { VIDEO_ACCELERATION_QSV, AV_HWDEVICE_TYPE_QSV },
-#endif
-#ifdef _WIN32
-        { VIDEO_ACCELERATION_D3D11, AV_HWDEVICE_TYPE_D3D11VA },
-#else
-        { VIDEO_ACCELERATION_VAAPI, AV_HWDEVICE_TYPE_VAAPI },
-#endif
+    { VIDEO_ACCELERATION_QSV, AV_HWDEVICE_TYPE_QSV },
+    { VIDEO_ACCELERATION_D3D11, AV_HWDEVICE_TYPE_D3D11VA },
+    { VIDEO_ACCELERATION_VAAPI, AV_HWDEVICE_TYPE_VAAPI }
 };
 
 #ifdef HAVE_VA
@@ -235,9 +230,10 @@ static AVBufferRef *hw_create_device_from_existent(ocl::OpenCLExecutionContext& 
         return NULL;
     }
     if (hw_type != base_hw_type) {
-        av_hwdevice_ctx_create_derived(&ctx, hw_type, ctx, 0);
-        if (!ctx)
-            return NULL;
+        AVBufferRef *derived_ctx = NULL;
+        av_hwdevice_ctx_create_derived(&derived_ctx, hw_type, ctx, 0);
+        av_buffer_unref(&ctx);
+        return derived_ctx;
     }
     return ctx;
 }
@@ -286,30 +282,39 @@ static AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_dev
     return NULL;
 }
 
-static int hw_create_frames(AVCodecContext *ctx, AVPixelFormat format, int pool_size)
+static AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int height, AVPixelFormat format, int pool_size = HW_FRAMES_POOL_SIZE)
 {
-    AVBufferRef *hw_device_ctx = ctx->hw_device_ctx;
-    AVBufferRef *hw_frames_ref;
-    AVHWFramesContext *frames_ctx = NULL;
-    int err = 0;
-
-    if (!(hw_frames_ref = av_hwframe_ctx_alloc(hw_device_ctx))) {
+    AVBufferRef *hw_frames_ref = av_hwframe_ctx_alloc(hw_device_ctx);
+    if (!hw_frames_ref) {
         fprintf(stderr, "Failed to create HW frame context\n");
-        return -1;
+        return NULL;
     }
-    frames_ctx = (AVHWFramesContext *)(hw_frames_ref->data);
+    AVHWFramesContext *frames_ctx = (AVHWFramesContext *)(hw_frames_ref->data);
     frames_ctx->format    = format;
     frames_ctx->sw_format = AV_PIX_FMT_NV12;
-    frames_ctx->width     = ctx->width;
-    frames_ctx->height    = ctx->height;
+    frames_ctx->width     = width;
+    frames_ctx->height    = height;
     frames_ctx->initial_pool_size = pool_size;
-    if ((err = av_hwframe_ctx_init(hw_frames_ref)) < 0) {
+    if (av_hwframe_ctx_init(hw_frames_ref) < 0) {
         fprintf(stderr, "Failed to initialize HW frame context\n");
         av_buffer_unref(&hw_frames_ref);
-        return err;
+        return NULL;
     }
-    ctx->hw_frames_ctx = hw_frames_ref;
-    return err;
+    return hw_frames_ref;
+}
+
+static AVPixelFormat hw_get_codec_native_format(AVCodec* codec, AVBufferRef *hw_device_ctx) {
+    AVHWDeviceType hw_type = ((AVHWDeviceContext *) hw_device_ctx->data)->type;
+    if (hw_type == AV_HWDEVICE_TYPE_VAAPI) {
+        return AV_PIX_FMT_VAAPI;
+    } else if (hw_type == AV_HWDEVICE_TYPE_D3D11VA) {
+        return AV_PIX_FMT_D3D11;
+    } else if (hw_type == AV_HWDEVICE_TYPE_QSV) {
+        return AV_PIX_FMT_QSV;
+    }
+    if (codec && codec->pix_fmts)
+        return codec->pix_fmts[0];
+    return AV_PIX_FMT_NONE;
 }
 
 static const struct {
@@ -353,13 +358,60 @@ static std::string hw_get_codec_name(int codec_id, VideoAccelerationType hw_type
 
 // In case of QSV we have to set this callback to select hardware format AV_PIX_FMT_QSV, not software format which is
 // first in the list of supported formats. Also in case of QSV we have to allocate frame pool.
-static enum AVPixelFormat hw_qsv_format_callback(struct AVCodecContext *s, const enum AVPixelFormat * fmt) {
+static enum AVPixelFormat hw_qsv_format_callback(struct AVCodecContext *ctx, const enum AVPixelFormat * fmt) {
     for (int i = 0; ;i++) {
         if (fmt[i] == AV_PIX_FMT_QSV) {
-            hw_create_frames(s, AV_PIX_FMT_QSV, HW_FRAMES_POOL_SIZE);
-            return AV_PIX_FMT_QSV;
+            ctx->hw_frames_ctx = hw_create_frames(ctx->hw_device_ctx, ctx->width, ctx->height, AV_PIX_FMT_QSV);
+            if (ctx->hw_frames_ctx)
+                return AV_PIX_FMT_QSV;
         }
         if (!fmt[i])
             return fmt[0];
     }
+}
+
+// GPU color conversion NV12->BGRA via OpenCL extensions
+bool hw_copy_media_to_opencl(AVHWDeviceContext* hw_device_ctx, AVFrame* picture, cv::OutputArray output) {
+#ifdef HAVE_VA_INTEL
+    VADisplay va_display = hw_get_va_display(hw_device_ctx);
+    VASurfaceID va_surface = hw_get_va_surface(picture);
+    if (va_display != NULL && va_surface != VA_INVALID_SURFACE) {
+        Size size(picture->width, picture->height);
+        va_intel::convertFromVASurface(va_display, va_surface, size, output);
+        return true;
+    }
+#endif
+
+#ifdef HAVE_DIRECTX
+    ID3D11Device* pD3D11Device = hw_get_d3d11_device(hw_device_ctx);
+        ID3D11Texture2D* pD3D11Texture = hw_get_d3d11_texture(picture);
+        if (pD3D11Device && pD3D11Texture) {
+            directx::convertFromD3D11Texture2D(pD3D11Texture2D, output);
+            return true;
+        }
+#endif
+    return false;
+}
+
+// GPU color conversion BGRA->NV12 via OpenCL extensions
+bool hw_copy_opencl_to_media(AVHWDeviceContext* hw_device_ctx, cv::InputArray input, AVFrame* hw_frame) {
+#ifdef HAVE_VA_INTEL
+    VADisplay va_display = hw_get_va_display(hw_device_ctx);
+    VASurfaceID va_surface = hw_get_va_surface(hw_frame);
+    if (va_display != NULL && va_surface != VA_INVALID_SURFACE) {
+        Size size(hw_frame->width, hw_frame->height);
+        va_intel::convertToVASurface(va_display, input, va_surface, size);
+        return true;
+    }
+#endif
+
+#ifdef HAVE_DIRECTX
+    ID3D11Device* pD3D11Device = hw_get_d3d11_device(hw_device_ctx);
+    ID3D11Texture2D* pD3D11Texture = hw_get_d3d11_texture(hw_frame);
+    if (pD3D11Device && pD3D11Texture) {
+        directx::convertToD3D10Texture2D(input, pD3D11Texture);
+        return true;
+    }
+#endif
+    return false;
 }
