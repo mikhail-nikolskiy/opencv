@@ -303,57 +303,36 @@ static AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int 
     return hw_frames_ref;
 }
 
-static AVPixelFormat hw_get_codec_native_format(AVCodec* codec, AVBufferRef *hw_device_ctx) {
-    AVHWDeviceType hw_type = ((AVHWDeviceContext *) hw_device_ctx->data)->type;
-    if (hw_type == AV_HWDEVICE_TYPE_VAAPI) {
-        return AV_PIX_FMT_VAAPI;
-    } else if (hw_type == AV_HWDEVICE_TYPE_D3D11VA) {
-        return AV_PIX_FMT_D3D11;
-    } else if (hw_type == AV_HWDEVICE_TYPE_QSV) {
-        return AV_PIX_FMT_QSV;
-    }
-    if (codec && codec->pix_fmts)
-        return codec->pix_fmts[0];
-    return AV_PIX_FMT_NONE;
-}
+static AVCodec *hw_find_codec(enum AVCodecID id, AVBufferRef *hw_device_ctx, int (*check_category)(const AVCodec *), AVPixelFormat *hw_pix_fmt = NULL) {
+    AVHWDeviceType hw_type = AV_HWDEVICE_TYPE_NONE;
+    AVCodec *c;
+    void *opaque = 0;
 
-static const struct {
-    int codec_id;
-    const char *string;
-} ffmpeg_codec_id_string[] = {
-        { AV_CODEC_ID_H263, "h263" },
-        { AV_CODEC_ID_H264, "h264" },
-        { AV_CODEC_ID_HEVC, "hevc" },
-        { AV_CODEC_ID_MPEG2VIDEO, "mpeg2" },
-        { AV_CODEC_ID_MPEG4, "mpeg4" },
-        { AV_CODEC_ID_VC1, "vc1" },
-        { AV_CODEC_ID_VP8, "vp8" },
-        { AV_CODEC_ID_VP9, "vp9" },
-        { AV_CODEC_ID_WMV3, "wmv3" },
-        { AV_CODEC_ID_AV1, "av1" }
-};
+    if (hw_device_ctx)
+        hw_type = ((AVHWDeviceContext *) hw_device_ctx->data)->type;
 
-static std::string hw_get_codec_name(int codec_id, VideoAccelerationType hw_type) {
-    std::string name;
-    for (size_t i = 0; i < sizeof(ffmpeg_codec_id_string)/sizeof(ffmpeg_codec_id_string[0]); i++) {
-        if (ffmpeg_codec_id_string[i].codec_id == codec_id) {
-            name = ffmpeg_codec_id_string[i].string;
-            break;
+    while ((c = (AVCodec*)av_codec_iterate(&opaque))) {
+        if (!check_category(c))
+            continue;
+        if (c->id != id)
+            continue;
+        if (hw_type != AV_HWDEVICE_TYPE_NONE) {
+            for (int i = 0;; i++) {
+                const AVCodecHWConfig *hw_config = avcodec_get_hw_config(c, i);
+                if (!hw_config)
+                    break;
+                if (hw_config->device_type == hw_type) {
+                    if (hw_pix_fmt)
+                        *hw_pix_fmt = hw_config->pix_fmt;
+                    return c;
+                }
+            }
+        } else {
+            return c;
         }
     }
-    if (name.empty()) {
-        return "";
-    }
-    if (hw_type == VIDEO_ACCELERATION_VAAPI) {
-        name += "_vaapi";
-    } else if (hw_type == VIDEO_ACCELERATION_D3D11) {
-        name += "_d3d11va"; // "_d3d11va2"
-    } else if (hw_type == VIDEO_ACCELERATION_QSV) {
-        name += "_qsv";
-    } else {
-        return "";
-    }
-    return name;
+
+    return NULL;
 }
 
 // In case of QSV we have to set this callback to select hardware format AV_PIX_FMT_QSV, not software format which is
