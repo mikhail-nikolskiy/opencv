@@ -977,12 +977,7 @@ bool CvCapture_FFMPEG::open( const char* _filename )
 
             AVCodec *codec;
             if(av_dict_get(dict, "video_codec", NULL, 0) == NULL) {
-                if (hw_type == VIDEO_ACCELERATION_QSV) {
-                    std::string name = hw_get_codec_name(enc->codec_id, hw_type);
-                    codec = avcodec_find_decoder_by_name(name.c_str());
-                } else {
-                    codec = avcodec_find_decoder(enc->codec_id);
-                }
+                codec = hw_find_codec(enc->codec_id, enc->hw_device_ctx, av_codec_is_decoder);
             } else {
                 codec = avcodec_find_decoder_by_name(av_dict_get(dict, "video_codec", NULL, 0)->value);
             }
@@ -1783,7 +1778,7 @@ static AVFrame * icv_alloc_picture_FFMPEG(int pix_fmt, int width, int height, bo
 
 /* add a video output stream to the container */
 static AVStream *icv_add_video_stream_FFMPEG(AVFormatContext *oc,
-                                             AVCodec* codec,
+                                             const AVCodec* codec,
                                              int w, int h, int bitrate,
                                              double fps, int pixel_format)
 {
@@ -2459,6 +2454,7 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
 
     double bitrate = std::min(bitrate_scale*fps*width*height, (double)INT_MAX/2);
 
+    // HW device context and HW frames context
     AVBufferRef *hw_device_ctx = hw_create_device(&hw_type, &hw_device);
     AVBufferRef *hw_frames_ctx = NULL;
 
@@ -2467,16 +2463,14 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
     if (!hw_device_ctx) {
         codec = avcodec_find_encoder(codec_id);
     } else {
-        std::string name = hw_get_codec_name(codec_id, hw_type);
-        if (!name.empty()) {
-            codec = avcodec_find_encoder_by_name(name.c_str());
-            // create HW frames for HW encoder
-            if (codec) {
-                AVPixelFormat hw_format = hw_get_codec_native_format(codec, hw_device_ctx);
-                hw_frames_ctx = hw_create_frames(hw_device_ctx, width, height, hw_format);
-                if (hw_frames_ctx)
-                    codec_pix_fmt = hw_format;
-            }
+        AVPixelFormat hw_format = AV_PIX_FMT_NONE;
+        codec = hw_find_codec(codec_id, hw_device_ctx, av_codec_is_encoder, &hw_format);
+        if (codec) {
+            hw_frames_ctx = hw_create_frames(hw_device_ctx, width, height, hw_format);
+            if (hw_frames_ctx)
+                codec_pix_fmt = hw_format;
+            else
+                codec = NULL;
         }
         if (!codec) {
             codec = avcodec_find_encoder(codec_id); // SW encoder
