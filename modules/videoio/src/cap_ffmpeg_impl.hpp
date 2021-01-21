@@ -45,12 +45,6 @@
 
 using namespace cv;
 
-#define CV_TRACE(_EXPR)  \
-{                           \
-    CV_INSTRUMENT_REGION_NAME(#_EXPR); \
-    _EXPR; \
-}
-
 #if !(defined(_WIN32) || defined(WINCE))
 # include <pthread.h>
 #endif
@@ -460,6 +454,7 @@ static AVRational _opencv_ffmpeg_get_sample_aspect_ratio(AVStream *stream)
 #endif
 }
 
+
 struct CvCapture_FFMPEG
 {
     bool open( const char* filename );
@@ -638,6 +633,7 @@ void CvCapture_FFMPEG::close()
 #endif
     }
 
+    // TODO
     cv::VideoAccelerationType _hw_type = hw_type;
     int _hw_device = hw_device;
     init();
@@ -972,16 +968,17 @@ bool CvCapture_FFMPEG::open( const char* _filename )
 
             enc->hw_device_ctx = hw_create_device(&hw_type, &hw_device);
             if (hw_type == VIDEO_ACCELERATION_QSV) {
-                enc->get_format = hw_qsv_format_callback;
+                enc->get_format = hw_qsv_format_callback; // callback selects QSV pixel format
             }
 
             AVCodec *codec;
-            if(av_dict_get(dict, "video_codec", NULL, 0) == NULL) {
+			if (enc->hw_device_ctx) {
                 codec = hw_find_codec(enc->codec_id, enc->hw_device_ctx, av_codec_is_decoder);
+            } else if(av_dict_get(dict, "video_codec", NULL, 0) == NULL) {
+                codec = avcodec_find_decoder(enc->codec_id);
             } else {
                 codec = avcodec_find_decoder_by_name(av_dict_get(dict, "video_codec", NULL, 0)->value);
             }
-
             if (!codec || avcodec_open2(enc, codec, NULL) < 0)
                 goto exit_func;
 
@@ -1157,7 +1154,7 @@ bool CvCapture_FFMPEG::grabFrame()
     interrupt_metadata.timeout_after_ms = LIBAVFORMAT_INTERRUPT_READ_TIMEOUT_MS;
 #endif
 
-    // check if we can receive decoded frame from previous packet
+    // check if we can receive frame from previously decoded packet
     valid = avcodec_receive_frame(video_st->codec, picture) >= 0;
 
     // get the next frame
@@ -1930,20 +1927,17 @@ static int icv_av_write_frame_FFMPEG( AVFormatContext * oc, AVStream * video_st,
     {
         /* encode the image */
 #if USE_AV_SEND_FRAME_API
-        CV_TRACE(ret = avcodec_send_frame(c, picture));
+        ret = avcodec_send_frame(c, picture);
         while (ret >= 0)
         {
             AVPacket* pkt = av_packet_alloc();
             pkt->stream_index = video_st->index;
-            CV_TRACE(ret = avcodec_receive_packet(c, pkt));
+            ret = avcodec_receive_packet(c, pkt);
 
             if(!ret)
             {
                 av_packet_rescale_ts(pkt, c->time_base, video_st->time_base);
-                CV_TRACE(ret = av_write_frame(oc, pkt));
-                if (ret < 0) {
-                    fprintf(stderr, "Could not write to output file: %s\n", icvFFMPEGErrStr(ret));
-                }
+                ret = av_write_frame(oc, pkt);
                 av_packet_free(&pkt);
                 continue;
             }
@@ -2458,8 +2452,11 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
     AVBufferRef *hw_device_ctx = hw_create_device(&hw_type, &hw_device);
     AVBufferRef *hw_frames_ctx = NULL;
 
-    /* find the video encoder */
+    // Find the video encoder
     AVCodec* codec = NULL;
+    if (codec_id == AV_CODEC_ID_NONE) {
+	    codec_id = av_guess_codec(oc->oformat, NULL, oc->filename, NULL, AVMEDIA_TYPE_VIDEO);
+    }
     if (!hw_device_ctx) {
         codec = avcodec_find_encoder(codec_id);
     } else {

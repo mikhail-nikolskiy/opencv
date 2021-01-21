@@ -42,6 +42,23 @@
 
 #include "opencv2/videoio.hpp"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
+#ifdef __cplusplus
+}
+#endif
+
+#define HW_FRAMES_POOL_SIZE     20
+
+AVBufferRef *hw_create_device(cv::VideoAccelerationType *hw_type, int* hw_device);
+AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int height, AVPixelFormat format, int pool_size = HW_FRAMES_POOL_SIZE);
+AVCodec *hw_find_codec(AVCodecID id, AVBufferRef *hw_device_ctx, int (*check_category)(const AVCodec *), AVPixelFormat *hw_pix_fmt = NULL);
+bool hw_copy_media_to_opencl(AVHWDeviceContext* hw_device_ctx, AVFrame* picture, cv::OutputArray output);
+bool hw_copy_opencl_to_media(AVHWDeviceContext* hw_device_ctx, cv::InputArray input, AVFrame* hw_frame);
+
 #ifdef HAVE_DIRECTX
 #include "opencv2/core/directx.hpp"
 #endif
@@ -59,7 +76,6 @@
 #include "opencv2/core/ocl.hpp"
 #endif
 
-#define HW_FRAMES_POOL_SIZE     20
 #define HW_DEVICE_NOT_SET       -1
 #define HW_DEVICE_FROM_EXISTENT -2
 
@@ -67,8 +83,6 @@
 extern "C" {
 #endif
 
-#include <libavcodec/avcodec.h>
-#include <libavutil/hwcontext.h>
 #ifdef HAVE_DIRECTX
 #include <libavutil/hwcontext_d3d11va.h>
 #endif
@@ -240,7 +254,7 @@ static AVBufferRef *hw_create_device_from_existent(ocl::OpenCLExecutionContext& 
 
 // Parameters hw_type and hw_device are input+output
 // The function returns HW device context (or NULL), and updates hw_type and hw_device to specific type/device
-static AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_device) {
+AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_device) {
     if (*hw_type == VIDEO_ACCELERATION_NONE)
         return NULL;
 
@@ -282,7 +296,7 @@ static AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_dev
     return NULL;
 }
 
-static AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int height, AVPixelFormat format, int pool_size = HW_FRAMES_POOL_SIZE)
+AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int height, AVPixelFormat format, int pool_size)
 {
     AVBufferRef *hw_frames_ref = av_hwframe_ctx_alloc(hw_device_ctx);
     if (!hw_frames_ref) {
@@ -303,7 +317,7 @@ static AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int 
     return hw_frames_ref;
 }
 
-static AVCodec *hw_find_codec(enum AVCodecID id, AVBufferRef *hw_device_ctx, int (*check_category)(const AVCodec *), AVPixelFormat *hw_pix_fmt = NULL) {
+AVCodec *hw_find_codec(AVCodecID id, AVBufferRef *hw_device_ctx, int (*check_category)(const AVCodec *), AVPixelFormat *hw_pix_fmt) {
     AVHWDeviceType hw_type = AV_HWDEVICE_TYPE_NONE;
     AVCodec *c;
     void *opaque = 0;
