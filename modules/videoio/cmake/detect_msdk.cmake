@@ -13,17 +13,30 @@ if(NOT HAVE_MFX)
     endif()
   endif()
   find_path(MFX_INCLUDE mfxdefs.h
-    PATHS ${paths}
-    PATH_SUFFIXES "include" "include/mfx"
+    PATHS ${paths} "/usr/include"
+    PATH_SUFFIXES "include" "include/mfx" "mfx"
     NO_DEFAULT_PATH)
   find_library(MFX_LIBRARY NAMES mfx libmfx${vs_suffix}
     PATHS ${paths}
     PATH_SUFFIXES "lib64" "lib/lin_x64" "lib/${vs_arch}"
     NO_DEFAULT_PATH)
+  message("################# MFX_INCLUDE ${MFX_INCLUDE}")
+  message("################# MFX_LIBRARY ${MFX_LIBRARY}")
   if(MFX_INCLUDE AND MFX_LIBRARY)
     set(HAVE_MFX TRUE)
     set(MFX_INCLUDE_DIRS "${MFX_INCLUDE}")
     set(MFX_LIBRARIES "${MFX_LIBRARY}")
+  endif()
+endif()
+
+if(NOT HAVE_MFX AND PKG_CONFIG_FOUND)
+  ocv_check_modules(MFX mfx)
+  if(MFX_FOUND)
+    set(HAVE_MFX TRUE)
+    message("################# MFX_INCLUDE_DIRS ${MFX_INCLUDE_DIRS}")
+    message("################# MFX_LIBRARIES ${MFX_LIBRARIES}")
+    set(MFX_LIBRARY "${MFX_LIBRARIES}")
+    message("################# MFX_LIBRARY ${MFX_LIBRARY}")
   endif()
 endif()
 

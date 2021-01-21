@@ -76,20 +76,20 @@ endif()
 
 #==================================
 
-if(HAVE_FFMPEG AND NOT HAVE_FFMPEG_WRAPPER AND NOT OPENCV_FFMPEG_SKIP_BUILD_CHECK)
-  try_compile(__VALID_FFMPEG
-      "${OpenCV_BINARY_DIR}"
-      "${OpenCV_SOURCE_DIR}/cmake/checks/ffmpeg_test.cpp"
-      CMAKE_FLAGS "-DINCLUDE_DIRECTORIES:STRING=${FFMPEG_INCLUDE_DIRS}"
-                  "-DLINK_LIBRARIES:STRING=${FFMPEG_LIBRARIES}"
-      OUTPUT_VARIABLE TRY_OUT
-  )
-  if(NOT __VALID_FFMPEG)
-    # message(FATAL_ERROR "FFMPEG: test check build log:\n${TRY_OUT}")
-    message(STATUS "WARNING: Can't build ffmpeg test code")
-    set(HAVE_FFMPEG FALSE)
-  endif()
-endif()
+#if(HAVE_FFMPEG AND NOT HAVE_FFMPEG_WRAPPER AND NOT OPENCV_FFMPEG_SKIP_BUILD_CHECK)
+#  try_compile(__VALID_FFMPEG
+#      "${OpenCV_BINARY_DIR}"
+#      "${OpenCV_SOURCE_DIR}/cmake/checks/ffmpeg_test.cpp"
+#      CMAKE_FLAGS "-DINCLUDE_DIRECTORIES:STRING=${FFMPEG_INCLUDE_DIRS}"
+#                  "-DLINK_LIBRARIES:STRING=${FFMPEG_LIBRARIES}"
+#      OUTPUT_VARIABLE TRY_OUT
+#  )
+#  if(NOT __VALID_FFMPEG)
+#    # message(FATAL_ERROR "FFMPEG: test check build log:\n${TRY_OUT}")
+#    message(STATUS "WARNING: Can't build ffmpeg test code -DINCLUDE_DIRECTORIES:STRING=${FFMPEG_INCLUDE_DIRS} -DLINK_LIBRARIES:STRING=${FFMPEG_LIBRARIES}")
+#    set(HAVE_FFMPEG FALSE)
+#  endif()
+#endif()
 
 #==================================
 unset(_required_ffmpeg_libraries)
