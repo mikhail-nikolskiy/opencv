@@ -60,8 +60,17 @@ bool hw_copy_media_to_opencl(AVHWDeviceContext* hw_device_ctx, AVFrame* picture,
 bool hw_copy_opencl_to_media(AVHWDeviceContext* hw_device_ctx, cv::InputArray input, AVFrame* hw_frame);
 
 #ifdef HAVE_DIRECTX
+#pragma comment (lib, "dxva2.lib")
+#define D3D11_NO_HELPERS
 #include "opencv2/core/directx.hpp"
+#include <d3d9.h>
+#include <d3d11.h>
+#ifdef HAVE_OPENCL
+#include <CL/cl_dx9_media_sharing.h>
+#include <CL/cl_d3d11.h>
 #endif
+#endif
+
 #ifdef HAVE_VA_INTEL
 #include "opencv2/core/va_intel.hpp"
 #ifdef HAVE_VA_INTEL_OLD_HEADER
@@ -84,6 +93,7 @@ extern "C" {
 #endif
 
 #ifdef HAVE_DIRECTX
+#include <libavutil/hwcontext_dxva2.h>
 #include <libavutil/hwcontext_d3d11va.h>
 #endif
 #ifdef HAVE_VA
@@ -105,6 +115,7 @@ static struct {
 } hw_device_types[] = {
     { VIDEO_ACCELERATION_QSV, AV_HWDEVICE_TYPE_QSV },
     { VIDEO_ACCELERATION_D3D11, AV_HWDEVICE_TYPE_D3D11VA },
+    { VIDEO_ACCELERATION_D3D9, AV_HWDEVICE_TYPE_DXVA2 },
     { VIDEO_ACCELERATION_VAAPI, AV_HWDEVICE_TYPE_VAAPI }
 };
 
@@ -139,8 +150,36 @@ static VASurfaceID hw_get_va_surface(AVFrame *picture) {
 #endif
 
 #ifdef HAVE_DIRECTX
+static IDirect3DDeviceManager9* hw_get_d3d9_device(AVHWDeviceContext* hw_device_ctx) {
+    if (hw_device_ctx->type == AV_HWDEVICE_TYPE_DXVA2) {
+        return ((AVDXVA2DeviceContext*)hw_device_ctx->hwctx)->devmgr;
+    }
+#ifdef HAVE_MFX
+    else if (hw_device_ctx->type == AV_HWDEVICE_TYPE_QSV) {
+        mfxSession session = ((AVQSVDeviceContext*)hw_device_ctx->hwctx)->session;
+        mfxHDL hdl = NULL;
+        MFXVideoCORE_GetHandle(session, MFX_HANDLE_D3D9_DEVICE_MANAGER, &hdl);
+        return (IDirect3DDeviceManager9*)hdl;
+    }
+#endif
+    return NULL;
+}
+
+static IDirect3DSurface9* hw_get_d3d9_texture(AVFrame* picture) {
+    if (picture->format == AV_PIX_FMT_DXVA2_VLD) {
+        return (IDirect3DSurface9*)picture->data[3]; // As defined by AV_PIX_FMT_DXVA2_VLD
+    }
+#ifdef HAVE_MFX
+    else if (picture->format == AV_PIX_FMT_QSV) {
+        mfxFrameSurface1* surface = (mfxFrameSurface1*)picture->data[3]; // As defined by AV_PIX_FMT_QSV
+        return (IDirect3DSurface9*)surface->Data.MemId;
+    }
+#endif
+    return NULL;
+}
+
 static ID3D11Device* hw_get_d3d11_device(AVHWDeviceContext* hw_device_ctx) {
-    if (hw_device_ctx->type == AV_HWDEVICE_TYPE_D3D11) {
+    if (hw_device_ctx->type == AV_HWDEVICE_TYPE_D3D11VA) {
         return ((AVD3D11VADeviceContext *) hw_device_ctx->hwctx)->device;
     }
 #ifdef HAVE_MFX
@@ -181,6 +220,18 @@ static void hw_bind_device(AVBufferRef *ctx) {
     }
 #endif
 #if defined(HAVE_DIRECTX) && defined(HAVE_OPENCL)
+    IDirect3DDeviceManager9* device_manager = hw_get_d3d9_device(hw_device_ctx);
+    if (device_manager) {
+        HANDLE hDevice = 0;
+        if (SUCCEEDED(device_manager->OpenDeviceHandle(&hDevice))) {
+            IDirect3DDevice9* pDevice = 0;
+            if (SUCCEEDED(device_manager->LockDevice(hDevice, &pDevice, FALSE))) {
+                directx::ocl::initializeContextFromDirect3DDevice9(pDevice);
+                device_manager->UnlockDevice(hDevice, FALSE);
+            }
+            device_manager->CloseDeviceHandle(hDevice);
+        }
+    }
     ID3D11Device *device = hw_get_d3d11_device(hw_device_ctx);
     if (device) {
         directx::ocl::initializeContextFromD3D11Device(device);
@@ -191,27 +242,19 @@ static void hw_bind_device(AVBufferRef *ctx) {
 static AVBufferRef *hw_create_device_from_existent(ocl::OpenCLExecutionContext& ocl_context, AVHWDeviceType hw_type) {
     if (ocl_context.empty())
         return nullptr;
-    AVHWDeviceType base_hw_type = hw_type;
-    if (hw_type == AV_HWDEVICE_TYPE_QSV) {
-#ifdef _WIN32
-        base_hw_type = AV_HWDEVICE_TYPE_D3D11VA;
-#else
-        base_hw_type = AV_HWDEVICE_TYPE_VAAPI;
-#endif
-    }
-    intptr_t cl_media_property = 0;
+    AVHWDeviceType base_hw_type = AV_HWDEVICE_TYPE_NONE;
+    static struct {
+        AVHWDeviceType hw_type;
+        intptr_t cl_property;
+    } cl_media_properties[] = {
 #ifdef HAVE_VA_INTEL
-    if (base_hw_type == AV_HWDEVICE_TYPE_VAAPI) {
-        cl_media_property = CL_CONTEXT_VA_API_DISPLAY_INTEL;
-    }
+        { AV_HWDEVICE_TYPE_VAAPI, CL_CONTEXT_VA_API_DISPLAY_INTEL },
 #endif
 #ifdef HAVE_DIRECTX
-    if (base_hw_type == AV_HWDEVICE_TYPE_D3D11VA)
-        cl_media_property = CL_CONTEXT_D3D11_DEVICE_KHR;
-    }
+        { AV_HWDEVICE_TYPE_DXVA2, CL_CONTEXT_ADAPTER_D3D9_KHR },
+        { AV_HWDEVICE_TYPE_D3D11VA, CL_CONTEXT_D3D11_DEVICE_KHR },
 #endif
-    if (!cl_media_property)
-        return NULL;
+    };
     void *media_device = NULL;
     cl_context context = (cl_context) ocl_context.getContext().ptr();
     ::size_t size = 0;
@@ -219,9 +262,12 @@ static AVBufferRef *hw_create_device_from_existent(ocl::OpenCLExecutionContext& 
     std::vector<cl_context_properties> prop(size / sizeof(cl_context_properties));
     clGetContextInfo(context, CL_CONTEXT_PROPERTIES, size, prop.data(), NULL);
     for (size_t i = 0; i < prop.size(); i += 2) {
-        if (prop[i] == cl_media_property) {
-            media_device = (void *) prop[i + 1];
-            break;
+        for (size_t j = 0; j < sizeof(cl_media_properties)/sizeof(cl_media_properties[0]); j++) {
+            if (prop[i] == cl_media_properties[j].cl_property) {
+                media_device = (void*)prop[i + 1];
+                base_hw_type = cl_media_properties[j].hw_type;
+                break;
+            }
         }
     }
     if (!media_device)
@@ -236,8 +282,18 @@ static AVBufferRef *hw_create_device_from_existent(ocl::OpenCLExecutionContext& 
     }
 #endif
 #ifdef HAVE_DIRECTX
-    if (base_hw_type == AV_HWDEVICE_TYPE_VAAPI) {
-        ((AVD3D11VADeviceContext *) hw_device_ctx->hwctx)->device = (ID3D11Device*)media_device;
+    if (base_hw_type == AV_HWDEVICE_TYPE_D3D11VA) {
+        ((AVD3D11VADeviceContext*)hw_device_ctx->hwctx)->device = (ID3D11Device*)media_device;
+    } else
+    if (base_hw_type == AV_HWDEVICE_TYPE_DXVA2) {
+        IDirect3DDevice9* pDevice = (IDirect3DDevice9*)media_device;
+        IDirect3DDeviceManager9* pD3DManager = NULL;
+        UINT resetToken = 0;
+        if (SUCCEEDED(DXVA2CreateDirect3DDeviceManager9(&resetToken, &pD3DManager))) {
+            if (SUCCEEDED(pD3DManager->ResetDevice(pDevice, resetToken))) {
+                ((AVDXVA2DeviceContext*)hw_device_ctx->hwctx)->devmgr = pD3DManager;
+            }
+        }
     }
 #endif
     if (av_hwdevice_ctx_init(ctx) < 0) {
@@ -376,12 +432,19 @@ bool hw_copy_media_to_opencl(AVHWDeviceContext* hw_device_ctx, AVFrame* picture,
 #endif
 
 #ifdef HAVE_DIRECTX
+    IDirect3DDeviceManager9* pD3D9Device = hw_get_d3d9_device(hw_device_ctx);
+    IDirect3DSurface9* pD3D9Surface = hw_get_d3d9_texture(picture);
+    if (pD3D9Device && pD3D9Surface) {
+        directx::convertFromDirect3DSurface9(pD3D9Surface, output);
+        return true;
+    }
+
     ID3D11Device* pD3D11Device = hw_get_d3d11_device(hw_device_ctx);
-        ID3D11Texture2D* pD3D11Texture = hw_get_d3d11_texture(picture);
-        if (pD3D11Device && pD3D11Texture) {
-            directx::convertFromD3D11Texture2D(pD3D11Texture2D, output);
-            return true;
-        }
+    ID3D11Texture2D* pD3D11Texture = hw_get_d3d11_texture(picture);
+    if (pD3D11Device && pD3D11Texture) {
+        directx::convertFromD3D11Texture2D(pD3D11Texture, output);
+        return true;
+    }
 #endif
     return false;
 }
@@ -399,10 +462,17 @@ bool hw_copy_opencl_to_media(AVHWDeviceContext* hw_device_ctx, cv::InputArray in
 #endif
 
 #ifdef HAVE_DIRECTX
+    IDirect3DDeviceManager9* pD3D9Device = hw_get_d3d9_device(hw_device_ctx);
+    IDirect3DSurface9* pD3D9Surface = hw_get_d3d9_texture(hw_frame);
+    if (pD3D9Device && pD3D9Surface) {
+        directx::convertToDirect3DSurface9(input, pD3D9Surface);
+        return true;
+    }
+
     ID3D11Device* pD3D11Device = hw_get_d3d11_device(hw_device_ctx);
     ID3D11Texture2D* pD3D11Texture = hw_get_d3d11_texture(hw_frame);
     if (pD3D11Device && pD3D11Texture) {
-        directx::convertToD3D10Texture2D(input, pD3D11Texture);
+        directx::convertToD3D11Texture2D(input, pD3D11Texture);
         return true;
     }
 #endif

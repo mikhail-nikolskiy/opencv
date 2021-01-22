@@ -58,6 +58,8 @@
 #define NO_OPENCL_SUPPORT_ERROR CV_Error(cv::Error::StsBadFunc, "OpenCV was build without OpenCL support")
 #endif // HAVE_OPENCL
 
+#define _D3DFMT_NV12 ((D3DFORMAT)MAKEFOURCC('N', 'V', '1', '2'))
+
 namespace cv { namespace directx {
 
 int getTypeFromDXGI_FORMAT(const int iDXGI_FORMAT)
@@ -229,6 +231,8 @@ int getTypeFromD3DFORMAT(const int iD3DFORMAT)
     case D3DFMT_D16: return CV_16UC1;
 
     case D3DFMT_D32F_LOCKABLE: return CV_32FC1;
+
+    case _D3DFMT_NV12: return CV_8UC3;
     default: break;
     }
     return errorType;
@@ -1671,12 +1675,24 @@ void convertToDirect3DSurface9(InputArray src, IDirect3DSurface9* pDirect3DSurfa
     CV_Assert(u.isContinuous());
 
     cl_int status = 0;
-    cl_dx9_surface_info_khr surfaceInfo = {pDirect3DSurface9, (HANDLE)surfaceSharedHandle};
+    cl_dx9_surface_info_khr surfaceInfo = { pDirect3DSurface9, (HANDLE)surfaceSharedHandle };
     cl_mem clImage = impl.clCreateFromDX9MediaSurfaceKHR(context, CL_MEM_WRITE_ONLY,
         impl.isDirect3DDevice9Ex ? CL_ADAPTER_D3D9EX_KHR : CL_ADAPTER_D3D9_KHR,
-            &surfaceInfo, 0, &status);
+        &surfaceInfo, 0, &status);
     if (status != CL_SUCCESS)
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clCreateFromDX9MediaSurfaceKHR failed");
+
+#ifdef HAVE_DIRECTX_NV12
+    cl_mem clImageUV;
+    if (_D3DFMT_NV12 == desc.Format)
+    {
+        clImageUV = impl.clCreateFromDX9MediaSurfaceKHR(context, CL_MEM_WRITE_ONLY,
+            impl.isDirect3DDevice9Ex ? CL_ADAPTER_D3D9EX_KHR : CL_ADAPTER_D3D9_KHR,
+            &surfaceInfo, 1, &status);
+        if (status != CL_SUCCESS)
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clCreateFromDX9MediaSurfaceKHR failed");
+    }
+#endif
 
     cl_mem clBuffer = (cl_mem)u.handle(ACCESS_READ);
 
@@ -1684,12 +1700,32 @@ void convertToDirect3DSurface9(InputArray src, IDirect3DSurface9* pDirect3DSurfa
     status = impl.clEnqueueAcquireDX9MediaSurfacesKHR(q, 1, &clImage, 0, NULL, NULL);
     if (status != CL_SUCCESS)
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueAcquireDX9MediaSurfacesKHR failed");
-    size_t offset = 0; // TODO
-    size_t dst_origin[3] = {0, 0, 0};
-    size_t region[3] = {(size_t)u.cols, (size_t)u.rows, 1};
-    status = clEnqueueCopyBufferToImage(q, clBuffer, clImage, offset, dst_origin, region, 0, NULL, NULL);
-    if (status != CL_SUCCESS)
-        CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueCopyBufferToImage failed");
+
+#ifdef HAVE_DIRECTX_NV12
+    if (_D3DFMT_NV12 == desc.Format)
+    {
+        status = impl.clEnqueueAcquireDX9MediaSurfacesKHR(q, 1, &clImageUV, 0, NULL, NULL);
+        if (status != CL_SUCCESS)
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueAcquireD3D11ObjectsKHR failed");
+
+        if (!ocl::ocl_convert_bgr_to_nv12(clBuffer, (int)u.step[0], u.cols, u.rows, clImage, clImageUV))
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: ocl_convert_bgr_to_nv12 failed");
+
+        status = impl.clEnqueueReleaseDX9MediaSurfacesKHR(q, 1, &clImageUV, 0, NULL, NULL);
+        if (status != CL_SUCCESS)
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueReleaseD3D11ObjectsKHR failed");
+    }
+    else
+#endif
+    {
+        size_t offset = 0; // TODO
+        size_t dst_origin[3] = { 0, 0, 0 };
+        size_t region[3] = { (size_t)u.cols, (size_t)u.rows, 1 };
+        status = clEnqueueCopyBufferToImage(q, clBuffer, clImage, offset, dst_origin, region, 0, NULL, NULL);
+        if (status != CL_SUCCESS)
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueCopyBufferToImage failed");
+    }
+
     status = impl.clEnqueueReleaseDX9MediaSurfacesKHR(q, 1, &clImage, 0, NULL, NULL);
     if (status != CL_SUCCESS)
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueReleaseDX9MediaSurfacesKHR failed");
@@ -1701,6 +1737,14 @@ void convertToDirect3DSurface9(InputArray src, IDirect3DSurface9* pDirect3DSurfa
     status = clReleaseMemObject(clImage); // TODO RAII
     if (status != CL_SUCCESS)
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clReleaseMem failed");
+
+#ifdef HAVE_DIRECTX_NV12
+    if (_D3DFMT_NV12 == desc.Format) {
+        status = clReleaseMemObject(clImageUV);
+        if (status != CL_SUCCESS)
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clReleaseMem failed");
+    }
+#endif
 #else
     // TODO pDirect3DSurface9->LockRect() + memcpy + Unlock()
     NO_OPENCL_SUPPORT_ERROR;
@@ -1738,25 +1782,55 @@ void convertFromDirect3DSurface9(IDirect3DSurface9* pDirect3DSurface9, OutputArr
     CV_Assert(u.isContinuous());
 
     cl_int status = 0;
-    cl_dx9_surface_info_khr surfaceInfo = {pDirect3DSurface9, (HANDLE)surfaceSharedHandle};
+    cl_dx9_surface_info_khr surfaceInfo = { pDirect3DSurface9, (HANDLE)surfaceSharedHandle };
     cl_mem clImage = impl.clCreateFromDX9MediaSurfaceKHR(context, CL_MEM_READ_ONLY,
-            impl.isDirect3DDevice9Ex ? CL_ADAPTER_D3D9EX_KHR : CL_ADAPTER_D3D9_KHR,
-            &surfaceInfo, 0, &status);
+        impl.isDirect3DDevice9Ex ? CL_ADAPTER_D3D9EX_KHR : CL_ADAPTER_D3D9_KHR,
+        &surfaceInfo, 0, &status);
     if (status != CL_SUCCESS)
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clCreateFromDX9MediaSurfaceKHR failed");
 
+#ifdef HAVE_DIRECTX_NV12
+    cl_mem clImageUV;
+    if (_D3DFMT_NV12 == desc.Format)
+    {
+        clImageUV = impl.clCreateFromDX9MediaSurfaceKHR(context, CL_MEM_READ_ONLY,
+            impl.isDirect3DDevice9Ex ? CL_ADAPTER_D3D9EX_KHR : CL_ADAPTER_D3D9_KHR,
+            &surfaceInfo, 1, &status);
+        if (status != CL_SUCCESS)
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clCreateFromDX9MediaSurfaceKHR failed");
+    }
+#endif
     cl_mem clBuffer = (cl_mem)u.handle(ACCESS_WRITE);
 
     cl_command_queue q = (cl_command_queue)Queue::getDefault().ptr();
     status = impl.clEnqueueAcquireDX9MediaSurfacesKHR(q, 1, &clImage, 0, NULL, NULL);
     if (status != CL_SUCCESS)
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueAcquireDX9MediaSurfacesKHR failed");
-    size_t offset = 0; // TODO
-    size_t src_origin[3] = {0, 0, 0};
-    size_t region[3] = {(size_t)u.cols, (size_t)u.rows, 1};
-    status = clEnqueueCopyImageToBuffer(q, clImage, clBuffer, src_origin, region, offset, 0, NULL, NULL);
-    if (status != CL_SUCCESS)
-        CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueCopyImageToBuffer failed");
+
+#ifdef HAVE_DIRECTX_NV12
+    if (_D3DFMT_NV12 == desc.Format)
+    {
+        status = impl.clEnqueueAcquireDX9MediaSurfacesKHR(q, 1, &clImageUV, 0, NULL, NULL);
+        if (status != CL_SUCCESS)
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueAcquireD3D11ObjectsKHR failed");
+
+        if (!ocl::ocl_convert_nv12_to_bgr(clImage, clImageUV, clBuffer, (int)u.step[0], u.cols, u.rows))
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: ocl_convert_nv12_to_bgr failed");
+
+        status = impl.clEnqueueReleaseDX9MediaSurfacesKHR(q, 1, &clImageUV, 0, NULL, NULL);
+        if (status != CL_SUCCESS)
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueReleaseD3D11ObjectsKHR failed");
+    }
+    else
+#endif
+    {
+        size_t offset = 0; // TODO
+        size_t src_origin[3] = { 0, 0, 0 };
+        size_t region[3] = { (size_t)u.cols, (size_t)u.rows, 1 };
+        status = clEnqueueCopyImageToBuffer(q, clImage, clBuffer, src_origin, region, offset, 0, NULL, NULL);
+        if (status != CL_SUCCESS)
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueCopyImageToBuffer failed");
+    }
     status = impl.clEnqueueReleaseDX9MediaSurfacesKHR(q, 1, &clImage, 0, NULL, NULL);
     if (status != CL_SUCCESS)
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clEnqueueReleaseDX9MediaSurfacesKHR failed");
@@ -1768,6 +1842,14 @@ void convertFromDirect3DSurface9(IDirect3DSurface9* pDirect3DSurface9, OutputArr
     status = clReleaseMemObject(clImage); // TODO RAII
     if (status != CL_SUCCESS)
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clReleaseMem failed");
+
+#ifdef HAVE_DIRECTX_NV12
+    if (_D3DFMT_NV12 == desc.Format) {
+        status = clReleaseMemObject(clImageUV); // TODO RAII
+        if (status != CL_SUCCESS)
+            CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clReleaseMem failed");
+    }
+#endif
 #else
     // TODO pDirect3DSurface9->LockRect() + memcpy + Unlock()
     NO_OPENCL_SUPPORT_ERROR;
