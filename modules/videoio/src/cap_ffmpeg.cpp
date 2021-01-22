@@ -90,8 +90,8 @@ public:
         if (!ffmpegCapture)
             return false;
 
-        // if UMat and OpenCL enabled and HW codec, try GPU to GPU copy using OpenCL extensions
-        if (frame.isUMat() && ocl::useOpenCL() && ffmpegCapture->picture && ffmpegCapture->picture->hw_frames_ctx) {
+        // if UMat, try GPU to GPU copy using OpenCL extensions
+        if (frame.isUMat()) {
             if (ffmpegCapture->retrieveHWFrame(frame)) {
                 return true;
             }
@@ -183,8 +183,8 @@ public:
             return;
         CV_Assert(image.depth() == CV_8U);
 
-        // if UMat and OpenCL enabled and HW codec, try GPU to GPU copy using OpenCL extensions
-        if (image.isUMat() && ocl::useOpenCL() && ffmpegWriter->video_st->codec->hw_device_ctx) {
+        // if UMat, try GPU to GPU copy using OpenCL extensions
+        if (image.isUMat()) {
             if (ffmpegWriter->writeHWFrame(image)) {
                 return;
             }

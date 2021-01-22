@@ -1341,15 +1341,14 @@ bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* 
 bool CvCapture_FFMPEG::retrieveHWFrame(cv::OutputArray output)
 {
     CV_INSTRUMENT_REGION();
-    if (!video_st->codec->hw_device_ctx) {
+
+    // check that we have HW frame in GPU memory
+    if (!picture || !picture->hw_frames_ctx) {
         return false;
     }
-    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext *)video_st->codec->hw_device_ctx->data;
-    if (!hw_device_ctx)
-        return false;
 
     // GPU color conversion NV12->BGRA, from GPU media buffer to GPU OpenCL buffer
-    return hw_copy_media_to_opencl(hw_device_ctx, picture, output);
+    return hw_copy_media_to_opencl(video_st->codec->hw_device_ctx, picture, output);
 }
 
 double CvCapture_FFMPEG::getProperty( int property_id ) const
@@ -2083,8 +2082,9 @@ bool CvVideoWriter_FFMPEG::writeFrame(const unsigned char* data, int step, int w
 }
 
 bool CvVideoWriter_FFMPEG::writeHWFrame(cv::InputArray input) {
-    if (!video_st->codec->hw_device_ctx || !ocl::useOpenCL())
-        return false;
+    // check that current OpenCL context initilized on same media device as codec
+    //if (!hw_check_opencl_context(video_st->codec->hw_device_ctx))
+    //    return false;
 
     // Get hardware frame from frame pool
     AVFrame* hw_frame = av_frame_alloc();
@@ -2097,8 +2097,7 @@ bool CvVideoWriter_FFMPEG::writeHWFrame(cv::InputArray input) {
     }
 
     // GPU to GPU copy
-    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext*)video_st->codec->hw_device_ctx->data;
-    if (!hw_copy_opencl_to_media(hw_device_ctx, input, hw_frame)) {
+    if (!hw_copy_opencl_to_media(video_st->codec->hw_device_ctx, input, hw_frame)) {
         av_frame_free(&hw_frame);
         return false;
     }

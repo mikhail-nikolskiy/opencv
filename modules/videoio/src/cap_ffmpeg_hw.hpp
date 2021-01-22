@@ -56,8 +56,8 @@ extern "C" {
 AVBufferRef *hw_create_device(cv::VideoAccelerationType *hw_type, int* hw_device);
 AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int height, AVPixelFormat format, int pool_size = HW_FRAMES_POOL_SIZE);
 AVCodec *hw_find_codec(AVCodecID id, AVBufferRef *hw_device_ctx, int (*check_category)(const AVCodec *), AVPixelFormat *hw_pix_fmt = NULL);
-bool hw_copy_media_to_opencl(AVHWDeviceContext* hw_device_ctx, AVFrame* picture, cv::OutputArray output);
-bool hw_copy_opencl_to_media(AVHWDeviceContext* hw_device_ctx, cv::InputArray input, AVFrame* hw_frame);
+bool hw_copy_media_to_opencl(AVBufferRef* hw_device_ctx, AVFrame* picture, cv::OutputArray output);
+bool hw_copy_opencl_to_media(AVBufferRef* hw_device_ctx, cv::InputArray input, AVFrame* hw_frame);
 
 #ifdef HAVE_DIRECTX
 #pragma comment (lib, "dxva2.lib")
@@ -140,7 +140,7 @@ static VASurfaceID hw_get_va_surface(AVFrame *picture) {
 #endif
 
 #ifdef HAVE_DIRECTX
-static IDirect3DDeviceManager9* hw_get_d3d9_device(AVHWDeviceContext* hw_device_ctx) {
+static IDirect3DDeviceManager9* hw_get_d3d9_device_manager(AVHWDeviceContext* hw_device_ctx) {
     if (hw_device_ctx->type == AV_HWDEVICE_TYPE_DXVA2) {
         return ((AVDXVA2DeviceContext*)hw_device_ctx->hwctx)->devmgr;
     }
@@ -197,7 +197,7 @@ static ID3D11Texture2D* hw_get_d3d11_texture(AVFrame *picture) {
 }
 #endif
 
-static void hw_bind_device(AVBufferRef *ctx) {
+static void hw_bind_opencl(AVBufferRef *ctx) {
     if (!ctx)
         return;
     AVHWDeviceContext *hw_device_ctx = (AVHWDeviceContext *) ctx->data;
@@ -210,7 +210,7 @@ static void hw_bind_device(AVBufferRef *ctx) {
     }
 #endif
 #if defined(HAVE_DIRECTX) && defined(HAVE_OPENCL)
-    IDirect3DDeviceManager9* device_manager = hw_get_d3d9_device(hw_device_ctx);
+    IDirect3DDeviceManager9* device_manager = hw_get_d3d9_device_manager(hw_device_ctx);
     if (device_manager) {
         HANDLE hDevice = 0;
         if (SUCCEEDED(device_manager->OpenDeviceHandle(&hDevice))) {
@@ -229,9 +229,9 @@ static void hw_bind_device(AVBufferRef *ctx) {
 #endif
 }
 
-static AVBufferRef *hw_create_device_from_existent(ocl::OpenCLExecutionContext& ocl_context, AVHWDeviceType hw_type) {
+static std::pair<AVHWDeviceType, void*> hw_query_opencl_context(ocl::OpenCLExecutionContext& ocl_context) {
     if (ocl_context.empty())
-        return nullptr;
+        return { AV_HWDEVICE_TYPE_NONE, NULL };
     AVHWDeviceType base_hw_type = AV_HWDEVICE_TYPE_NONE;
     static struct {
         AVHWDeviceType hw_type;
@@ -245,38 +245,42 @@ static AVBufferRef *hw_create_device_from_existent(ocl::OpenCLExecutionContext& 
         { AV_HWDEVICE_TYPE_D3D11VA, CL_CONTEXT_D3D11_DEVICE_KHR },
 #endif
     };
-    void *media_device = NULL;
-    cl_context context = (cl_context) ocl_context.getContext().ptr();
+    void* media_device = NULL;
+    cl_context context = (cl_context)ocl_context.getContext().ptr();
     ::size_t size = 0;
     clGetContextInfo(context, CL_CONTEXT_PROPERTIES, 0, NULL, &size);
     std::vector<cl_context_properties> prop(size / sizeof(cl_context_properties));
     clGetContextInfo(context, CL_CONTEXT_PROPERTIES, size, prop.data(), NULL);
     for (size_t i = 0; i < prop.size(); i += 2) {
-        for (size_t j = 0; j < sizeof(cl_media_properties)/sizeof(cl_media_properties[0]); j++) {
+        for (size_t j = 0; j < sizeof(cl_media_properties) / sizeof(cl_media_properties[0]); j++) {
             if (prop[i] == cl_media_properties[j].cl_property) {
-                media_device = (void*)prop[i + 1];
-                base_hw_type = cl_media_properties[j].hw_type;
-                break;
+                return { cl_media_properties[j].hw_type, (void*)prop[i + 1] };
             }
         }
     }
-    if (!media_device)
+    return { AV_HWDEVICE_TYPE_NONE, NULL };
+}
+
+static AVBufferRef *hw_create_device_from_existent(ocl::OpenCLExecutionContext& ocl_context, AVHWDeviceType hw_type) {
+    std::pair<AVHWDeviceType, void*> q = hw_query_opencl_context(ocl_context);
+    if (q.first == AV_HWDEVICE_TYPE_NONE || !q.second)
         return NULL;
+    AVHWDeviceType base_hw_type = q.first;
     AVBufferRef *ctx = av_hwdevice_ctx_alloc(base_hw_type);
     if (!ctx)
         return NULL;
     AVHWDeviceContext *hw_device_ctx = (AVHWDeviceContext *) ctx->data;
 #ifdef HAVE_VA
     if (base_hw_type == AV_HWDEVICE_TYPE_VAAPI) {
-        ((AVVAAPIDeviceContext *) hw_device_ctx->hwctx)->display = (VADisplay)media_device;
+        ((AVVAAPIDeviceContext *) hw_device_ctx->hwctx)->display = (VADisplay)q.second;
     }
 #endif
 #ifdef HAVE_DIRECTX
     if (base_hw_type == AV_HWDEVICE_TYPE_D3D11VA) {
-        ((AVD3D11VADeviceContext*)hw_device_ctx->hwctx)->device = (ID3D11Device*)media_device;
+        ((AVD3D11VADeviceContext*)hw_device_ctx->hwctx)->device = (ID3D11Device*)q.second;
     } else
     if (base_hw_type == AV_HWDEVICE_TYPE_DXVA2) {
-        IDirect3DDevice9* pDevice = (IDirect3DDevice9*)media_device;
+        IDirect3DDevice9* pDevice = (IDirect3DDevice9*)q.second;
         IDirect3DDeviceManager9* pD3DManager = NULL;
         UINT resetToken = 0;
         if (SUCCEEDED(DXVA2CreateDirect3DDeviceManager9(&resetToken, &pD3DManager))) {
@@ -298,6 +302,40 @@ static AVBufferRef *hw_create_device_from_existent(ocl::OpenCLExecutionContext& 
     return ctx;
 }
 
+static bool hw_check_opencl_context(AVHWDeviceContext* ctx) {
+    ocl::OpenCLExecutionContext& ocl_context = ocl::OpenCLExecutionContext::getCurrentRef();
+    if (!ctx || ocl_context.empty())
+        return false;
+    std::pair<AVHWDeviceType, void*> q = hw_query_opencl_context(ocl_context);
+    AVHWDeviceType hw_type = q.first;
+    if (hw_type == AV_HWDEVICE_TYPE_NONE || q.second == NULL)
+        return false;
+#ifdef HAVE_VA
+    if (hw_type == AV_HWDEVICE_TYPE_VAAPI) {
+        return (hw_get_va_display(ctx) == (VADisplay)q.second);
+    }
+#endif
+#ifdef HAVE_DIRECTX
+    if (hw_type == AV_HWDEVICE_TYPE_D3D11VA) {
+        return (hw_get_d3d11_device(ctx) == (ID3D11Device*)q.second);
+    }
+    else if (hw_type == AV_HWDEVICE_TYPE_DXVA2) {
+        bool device_matched = false;
+        IDirect3DDeviceManager9* device_manager = hw_get_d3d9_device_manager(ctx);
+        HANDLE hDevice = 0;
+        if (device_manager && SUCCEEDED(device_manager->OpenDeviceHandle(&hDevice))) {
+            IDirect3DDevice9* pDevice = 0;
+            if (SUCCEEDED(device_manager->LockDevice(hDevice, &pDevice, FALSE))) {
+                device_matched = (pDevice == (IDirect3DDevice9*)q.second);
+                device_manager->UnlockDevice(hDevice, FALSE);
+            }
+            device_manager->CloseDeviceHandle(hDevice);
+        }
+        return device_matched;
+    }
+#endif
+    return false;
+}
 // Parameters hw_type and hw_device are input+output
 // The function returns HW device context (or NULL), and updates hw_type and hw_device to specific type/device
 AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_device) {
@@ -322,31 +360,32 @@ AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_device) {
             continue;
         AVHWDeviceType device_type = hw_device_types[i].ffmpeg_type;
 
-        // create media context on media device attached to OpenCL context
-        AVBufferRef *hw_device_ctx = hw_create_device_from_existent(ocl_context, device_type);
+        // try create media context on media device attached to OpenCL context
+        AVBufferRef* hw_device_ctx = hw_create_device_from_existent(ocl_context, device_type);
         if (hw_device_ctx != NULL) {
             *hw_type = hw_device_types[i].type;
             *hw_device = HW_DEVICE_FROM_EXISTENT;
             return hw_device_ctx;
         }
 
-        // if OpenCL context not set yet, create new media context and bind it to new OpenCL context
-        if (ocl_context.empty()) {
-            char *pdevice = NULL;
-            if (*hw_device >= 0 && *hw_device < 100000) {
-                if (device_type == AV_HWDEVICE_TYPE_VAAPI)
-                    snprintf(device, sizeof(device), "/dev/dri/renderD%d", 128 + *hw_device);
-                else
-                    snprintf(device, sizeof(device), "%d", *hw_device);
-                pdevice = device;
+        // create new media context
+        char* pdevice = NULL;
+        if (*hw_device >= 0 && *hw_device < 100000) {
+            if (device_type == AV_HWDEVICE_TYPE_VAAPI)
+                snprintf(device, sizeof(device), "/dev/dri/renderD%d", 128 + *hw_device);
+            else
+                snprintf(device, sizeof(device), "%d", *hw_device);
+            pdevice = device;
+        }
+        if (av_hwdevice_ctx_create(&hw_device_ctx, device_type, pdevice, NULL, 0) == 0) {
+            // if OpenCL context not set yet, create it with binding to media device
+            if (ocl_context.empty() && ocl::useOpenCL()) {
+                hw_bind_opencl(hw_device_ctx);
             }
-            if (av_hwdevice_ctx_create(&hw_device_ctx, device_type, pdevice, NULL, 0) == 0) {
-                hw_bind_device(hw_device_ctx);
-                *hw_type = hw_device_types[i].type;
-                if (*hw_device < 0)
-                    *hw_device = 0;
-                return hw_device_ctx;
-            }
+            *hw_type = hw_device_types[i].type;
+            if (*hw_device < 0)
+                *hw_device = 0;
+            return hw_device_ctx;
         }
     }
 
@@ -422,7 +461,15 @@ static enum AVPixelFormat hw_qsv_format_callback(struct AVCodecContext *ctx, con
 }
 
 // GPU color conversion NV12->BGRA via OpenCL extensions
-bool hw_copy_media_to_opencl(AVHWDeviceContext* hw_device_ctx, AVFrame* picture, cv::OutputArray output) {
+bool hw_copy_media_to_opencl(AVBufferRef* ctx, AVFrame* picture, cv::OutputArray output) {
+    if (!ctx)
+        return false;
+
+    // check that current OpenCL context initilized with binding to our media context
+    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext*)ctx->data;
+    if (!hw_check_opencl_context(hw_device_ctx))
+        return false;
+
 #ifdef HAVE_VA_INTEL
     VADisplay va_display = hw_get_va_display(hw_device_ctx);
     VASurfaceID va_surface = hw_get_va_surface(picture);
@@ -434,7 +481,7 @@ bool hw_copy_media_to_opencl(AVHWDeviceContext* hw_device_ctx, AVFrame* picture,
 #endif
 
 #ifdef HAVE_DIRECTX
-    IDirect3DDeviceManager9* pD3D9Device = hw_get_d3d9_device(hw_device_ctx);
+    IDirect3DDeviceManager9* pD3D9Device = hw_get_d3d9_device_manager(hw_device_ctx);
     IDirect3DSurface9* pD3D9Surface = hw_get_d3d9_texture(picture);
     if (pD3D9Device && pD3D9Surface) {
         directx::convertFromDirect3DSurface9(pD3D9Surface, output);
@@ -452,7 +499,15 @@ bool hw_copy_media_to_opencl(AVHWDeviceContext* hw_device_ctx, AVFrame* picture,
 }
 
 // GPU color conversion BGRA->NV12 via OpenCL extensions
-bool hw_copy_opencl_to_media(AVHWDeviceContext* hw_device_ctx, cv::InputArray input, AVFrame* hw_frame) {
+bool hw_copy_opencl_to_media(AVBufferRef* ctx, cv::InputArray input, AVFrame* hw_frame) {
+    if (!ctx)
+        return false;
+
+    // check that current OpenCL context initilized with binding to our media context
+    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext*)ctx->data;
+    if (!hw_check_opencl_context(hw_device_ctx))
+        return false;
+
 #ifdef HAVE_VA_INTEL
     VADisplay va_display = hw_get_va_display(hw_device_ctx);
     VASurfaceID va_surface = hw_get_va_surface(hw_frame);
@@ -464,7 +519,7 @@ bool hw_copy_opencl_to_media(AVHWDeviceContext* hw_device_ctx, cv::InputArray in
 #endif
 
 #ifdef HAVE_DIRECTX
-    IDirect3DDeviceManager9* pD3D9Device = hw_get_d3d9_device(hw_device_ctx);
+    IDirect3DDeviceManager9* pD3D9Device = hw_get_d3d9_device_manager(hw_device_ctx);
     IDirect3DSurface9* pD3D9Surface = hw_get_d3d9_texture(hw_frame);
     if (pD3D9Device && pD3D9Surface) {
         directx::convertToDirect3DSurface9(input, pD3D9Surface);
