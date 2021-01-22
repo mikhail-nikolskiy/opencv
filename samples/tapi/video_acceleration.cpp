@@ -16,7 +16,8 @@ const char* keys =
 "{ backend    | ffmpeg | VideoCapture and VideoWriter backend, valid values: 'any', 'ffmpeg', 'mf', 'gstreamer' }"
 "{ accel      | any    | GPU Video Acceleration, valid values: 'none', 'any', 'd3d9', 'd3d11', 'vaapi', 'qsv' }"
 "{ device     | -1     | Video Acceleration device (GPU) index (-1 means default device) }"
-"{ invert     | false  | apply image processing - invert pixels by calling cv::bitwise_not }"
+"{ invert     | false  | apply simple image processing - invert pixels by calling cv::bitwise_not }"
+"{ codec      | H264   | codec id (four characters string) of output file encoder }"
 "{ opencl     | true   | use OpenCL (inside VideoCapture/VideoWriter and for image processing) }"
 "{ h help     |        | print help message }";
 
@@ -87,12 +88,12 @@ int main(int argc, char** argv)
 
     string infile = cmd.get<string>("i");
     string outfile = cmd.get<string>("o");
-    cv::VideoCaptureAPIs backend = cv::CAP_ANY;
-    int accel = VIDEO_ACCELERATION_ANY;
+    string codec = cmd.get<string>("codec");
     int device = cmd.get<int>("device");
     bool use_opencl = cmd.get<bool>("opencl");
     bool invert = cmd.get<bool>("invert");
 
+    cv::VideoCaptureAPIs backend = cv::CAP_ANY;
     string backend_str = cmd.get<string>("accel");
     for (size_t i = 0; i < sizeof(backend_strings)/sizeof(backend_strings[0]); i++) {
         if (backend_str == backend_strings[i].str) {
@@ -100,6 +101,8 @@ int main(int argc, char** argv)
             break;
         }
     }
+
+    int accel = VIDEO_ACCELERATION_ANY;
     string accel_str = cmd.get<string>("backend");
     for (size_t i = 0; i < sizeof(acceleration_strings) / sizeof(acceleration_strings[0]); i++) {
         if (accel_str == acceleration_strings[i].str) {
@@ -134,12 +137,13 @@ int main(int argc, char** argv)
 
     VideoWriter writer;
     if (!outfile.empty() && outfile != "null") {
-        int fourcc = VideoWriter::fourcc('H','2','6','4');
+        const char* codec_str = codec.c_str();
+        int fourcc = VideoWriter::fourcc(codec_str[0], codec_str[1], codec_str[2], codec_str[3]);
         double fps = capture.get(CAP_PROP_FPS);
         Size frameSize = { (int)capture.get(CAP_PROP_FRAME_WIDTH), (int)capture.get(CAP_PROP_FRAME_HEIGHT) };
         writer = VideoWriter(outfile, backend, fourcc, fps, frameSize, {
                 VIDEOWRITER_PROP_HW_ACCELERATION, accel,
-                VIDEOWRITER_PROP_HW_DEVICE, 0
+                VIDEOWRITER_PROP_HW_DEVICE, device
         });
         if (!writer.isOpened()) {
             cerr << "Failed to open VideoWriter" << endl;
