@@ -94,7 +94,7 @@ int main(int argc, char** argv)
     bool invert = cmd.get<bool>("invert");
 
     cv::VideoCaptureAPIs backend = cv::CAP_ANY;
-    string backend_str = cmd.get<string>("accel");
+    string backend_str = cmd.get<string>("backend");
     for (size_t i = 0; i < sizeof(backend_strings)/sizeof(backend_strings[0]); i++) {
         if (backend_str == backend_strings[i].str) {
             backend = backend_strings[i].backend;
@@ -103,7 +103,7 @@ int main(int argc, char** argv)
     }
 
     int accel = VIDEO_ACCELERATION_ANY;
-    string accel_str = cmd.get<string>("backend");
+    string accel_str = cmd.get<string>("accel");
     for (size_t i = 0; i < sizeof(acceleration_strings) / sizeof(acceleration_strings[0]); i++) {
         if (accel_str == acceleration_strings[i].str) {
             accel = acceleration_strings[i].acceleration;
