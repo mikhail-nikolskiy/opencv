@@ -2082,6 +2082,9 @@ bool CvVideoWriter_FFMPEG::writeFrame(const unsigned char* data, int step, int w
 }
 
 bool CvVideoWriter_FFMPEG::writeHWFrame(cv::InputArray input) {
+    if (!video_st->codec->hw_frames_ctx)
+        return false;
+
     // check that current OpenCL context initilized on same media device as codec
     //if (!hw_check_opencl_context(video_st->codec->hw_device_ctx))
     //    return false;
