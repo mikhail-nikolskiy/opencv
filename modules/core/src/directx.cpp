@@ -232,7 +232,7 @@ int getTypeFromD3DFORMAT(const int iD3DFORMAT)
 
     case D3DFMT_D32F_LOCKABLE: return CV_32FC1;
 
-    case _D3DFMT_NV12: return CV_8UC1;
+    case _D3DFMT_NV12: return CV_8UC3;
     default: break;
     }
     return errorType;
