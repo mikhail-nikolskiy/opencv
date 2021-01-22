@@ -463,7 +463,7 @@ struct CvCapture_FFMPEG
     double getProperty(int) const;
     bool setProperty(int, double);
     bool grabFrame();
-    bool retrieveFrame(int, unsigned char** data, int* step, int* width, int* height, int* cn, AVFrame* picture = NULL);
+    bool retrieveFrame(int, unsigned char** data, int* step, int* width, int* height, int* cn);
     bool retrieveHWFrame(cv::OutputArray frame);
     void rotateFrame(cv::Mat &mat) const;
 
@@ -1240,7 +1240,7 @@ bool CvCapture_FFMPEG::grabFrame()
     return valid;
 }
 
-bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* width, int* height, int* cn, AVFrame* dec_picture)
+bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* width, int* height, int* cn)
 {
     if (!video_st)
         return false;
@@ -1256,9 +1256,17 @@ bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* 
         return p.data != NULL;
     }
 
-    if (!dec_picture)
-        dec_picture = picture;
-    if (!dec_picture || !dec_picture->data[0])
+    // if hardware frame, map it to system memory
+    AVFrame* sw_picture = picture;
+    if (picture && picture->hw_frames_ctx) {
+        sw_picture = av_frame_alloc();
+        if (av_hwframe_map(sw_picture, picture, AV_HWFRAME_MAP_READ) < 0) {
+            CV_Error(0, "Error mapping hw frame (av_hwframe_map)");
+            return false;
+        }
+    }
+
+    if (!sw_picture || !sw_picture->data[0])
         return false;
 
     if( img_convert_ctx == NULL ||
@@ -1273,7 +1281,7 @@ bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* 
         img_convert_ctx = sws_getCachedContext(
                 img_convert_ctx,
                 buffer_width, buffer_height,
-                dec_picture->format ? (AVPixelFormat)dec_picture->format : video_st->codec->pix_fmt,
+                sw_picture->format ? (AVPixelFormat)sw_picture->format : video_st->codec->pix_fmt,
                 buffer_width, buffer_height,
                 AV_PIX_FMT_BGR24,
                 SWS_BICUBIC,
@@ -1311,8 +1319,8 @@ bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* 
 
     sws_scale(
             img_convert_ctx,
-            dec_picture->data,
-            dec_picture->linesize,
+            sw_picture->data,
+            sw_picture->linesize,
             0, video_st->codec->coded_height,
             rgb_picture.data,
             rgb_picture.linesize
@@ -1324,6 +1332,9 @@ bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* 
     *height = frame.height;
     *cn = frame.cn;
 
+    if (sw_picture != picture) {
+        av_frame_unref(sw_picture);
+    }
     return true;
 }
 
@@ -1337,28 +1348,8 @@ bool CvCapture_FFMPEG::retrieveHWFrame(cv::OutputArray output)
     if (!hw_device_ctx)
         return false;
 
-    if (output.isUMat()) { // GPU color conversion NV12->BGRA, from GPU media buffer to GPU OpenCL buffer
-        if (hw_copy_media_to_opencl(hw_device_ctx, picture, output))
-            return true;
-    }
-
-    // map hardware frame to system memory
-    AVFrame* sw_picture = av_frame_alloc();
-    if (av_hwframe_map(sw_picture, picture, AV_HWFRAME_MAP_READ) >= 0) {
-        unsigned char *data = 0;
-        int step = 0, width = 0, height = 0, cn = 0;
-        if (retrieveFrame(0, &data, &step, &width, &height, &cn, sw_picture)) {
-            cv::Mat tmp(height, width, CV_MAKETYPE(CV_8U, cn), data, step);
-            //this->rotateFrame(tmp);
-            tmp.copyTo(output);
-            av_frame_unref(sw_picture);
-            return true;
-        } else {
-            av_frame_unref(sw_picture);
-        }
-    }
-
-    return false;
+    // GPU color conversion NV12->BGRA, from GPU media buffer to GPU OpenCL buffer
+    return hw_copy_media_to_opencl(hw_device_ctx, picture, output);
 }
 
 double CvCapture_FFMPEG::getProperty( int property_id ) const
@@ -1646,7 +1637,6 @@ struct CvVideoWriter_FFMPEG
     bool open( const char* filename, int fourcc,
                double fps, int width, int height, const VideoWriterParameters& params );
     void close();
-    bool convertFrame( const unsigned char* data, int step, int width, int height, int cn, int origin );
     bool writeFrame( const unsigned char* data, int step, int width, int height, int cn, int origin );
     bool writeHWFrame(cv::InputArray input);
 
@@ -1968,8 +1958,8 @@ static int icv_av_write_frame_FFMPEG( AVFormatContext * oc, AVStream * video_st,
     return ret;
 }
 
-/// convert input image to AVFrame
-bool CvVideoWriter_FFMPEG::convertFrame( const unsigned char* data, int step, int width, int height, int cn, int origin)
+/// write a frame with FFMPEG
+bool CvVideoWriter_FFMPEG::writeFrame(const unsigned char* data, int step, int width, int height, int cn, int origin)
 {
     // check parameters
     if (input_pix_fmt == AV_PIX_FMT_BGR24) {
@@ -2064,57 +2054,60 @@ bool CvVideoWriter_FFMPEG::convertFrame( const unsigned char* data, int step, in
         picture->linesize[0] = step;
     }
 
+    if (!video_st->codec->hw_device_ctx) {
+        picture->pts = frame_idx;
+        bool ret = icv_av_write_frame_FFMPEG(oc, video_st, outbuf, outbuf_size, picture) >= 0;
+    }
+    else {
+        // transfer data to HW frame
+        AVFrame* hw_frame = av_frame_alloc();
+        if (!hw_frame) {
+            return false;
+        }
+        if (av_hwframe_get_buffer(video_st->codec->hw_frames_ctx, hw_frame, 0) < 0) {
+            av_frame_free(&hw_frame);
+            return false;
+        }
+        if (av_hwframe_transfer_data(hw_frame, picture, 0) < 0) {
+            av_frame_free(&hw_frame);
+            return false;
+        }
+        hw_frame->pts = frame_idx;
+        icv_av_write_frame_FFMPEG(oc, video_st, outbuf, outbuf_size, hw_frame);
+        av_frame_free(&hw_frame);
+    }
+
+    frame_idx++;
+
     return true;
 }
 
-/// write a frame with FFMPEG
-bool CvVideoWriter_FFMPEG::writeFrame( const unsigned char* data, int step, int width, int height, int cn, int origin ) {
-    if (!convertFrame(data, step, width, height, cn, origin)) {
-        return false;
-    }
-
-    picture->pts = frame_idx;
-    bool ret = icv_av_write_frame_FFMPEG( oc, video_st, outbuf, outbuf_size, picture) >= 0;
-    frame_idx++;
-
-    return ret;
-}
-
 bool CvVideoWriter_FFMPEG::writeHWFrame(cv::InputArray input) {
-    if (!video_st->codec->hw_device_ctx)
+    if (!video_st->codec->hw_device_ctx || !ocl::useOpenCL())
         return false;
-    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext *)video_st->codec->hw_device_ctx->data;
 
     // Get hardware frame from frame pool
-    AVFrame *hw_frame;
-    if (!(hw_frame = av_frame_alloc()))
+    AVFrame* hw_frame = av_frame_alloc();
+    if (!hw_frame) {
         return false;
-    if (av_hwframe_get_buffer(video_st->codec->hw_frames_ctx, hw_frame, 0) < 0)
+    }
+    if (av_hwframe_get_buffer(video_st->codec->hw_frames_ctx, hw_frame, 0) < 0) {
+        av_frame_free(&hw_frame);
         return false;
-
-    // Copy input image into hardware AVFrame via OpenCL extensions
-    bool copied = false;
-    if (input.isUMat()) {
-        copied = hw_copy_opencl_to_media(hw_device_ctx, input, hw_frame);
     }
 
-    // Convert and transfer data to hardware AVFrame
-    if (!copied) {
-        cv::Mat m = input.getMat();
-        if (!convertFrame((const uchar *) m.ptr(), (int) m.step[0], m.cols, m.rows, m.channels(), 0)) {
-            return false;
-        }
-        if (av_hwframe_transfer_data(hw_frame, picture, 0) < 0)
-            return false;
+    // GPU to GPU copy
+    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext*)video_st->codec->hw_device_ctx->data;
+    if (!hw_copy_opencl_to_media(hw_device_ctx, input, hw_frame)) {
+        av_frame_free(&hw_frame);
+        return false;
     }
 
     // encode
     hw_frame->pts = frame_idx;
     icv_av_write_frame_FFMPEG( oc, video_st, outbuf, outbuf_size, hw_frame);
-
     frame_idx++;
 
-    // free
     av_frame_free(&hw_frame);
 
     return true;

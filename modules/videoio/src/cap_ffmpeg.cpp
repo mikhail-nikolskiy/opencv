@@ -90,8 +90,11 @@ public:
         if (!ffmpegCapture)
             return false;
 
-        if (ffmpegCapture->retrieveHWFrame(frame)) {
-            return true;
+        // if UMat and OpenCL enabled and HW codec, try GPU to GPU copy using OpenCL extensions
+        if (frame.isUMat() && ocl::useOpenCL() && ffmpegCapture->picture && ffmpegCapture->picture->hw_frames_ctx) {
+            if (ffmpegCapture->retrieveHWFrame(frame)) {
+                return true;
+            }
         }
 
         if (!icvRetrieveFrame_FFMPEG_p(ffmpegCapture, &data, &step, &width, &height, &cn))
