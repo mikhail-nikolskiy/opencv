@@ -187,7 +187,7 @@ int getTypeFromD3DFORMAT(const int iD3DFORMAT)
     NO_DIRECTX_SUPPORT_ERROR;
 #else
     const int errorType = -1;
-    switch ((enum _D3DFORMAT)iD3DFORMAT)
+    switch (iD3DFORMAT)
     {
     //case D3DFMT_UNKNOWN:
     case D3DFMT_R8G8B8: return CV_8UC3;
@@ -232,7 +232,7 @@ int getTypeFromD3DFORMAT(const int iD3DFORMAT)
 
     case D3DFMT_D32F_LOCKABLE: return CV_32FC1;
 
-    case _D3DFMT_NV12: return CV_8UC3;
+    case _D3DFMT_NV12: return CV_8UC1;
     default: break;
     }
     return errorType;
@@ -1683,7 +1683,7 @@ void convertToDirect3DSurface9(InputArray src, IDirect3DSurface9* pDirect3DSurfa
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clCreateFromDX9MediaSurfaceKHR failed");
 
 #ifdef HAVE_DIRECTX_NV12
-    cl_mem clImageUV;
+    cl_mem clImageUV = 0;
     if (_D3DFMT_NV12 == desc.Format)
     {
         clImageUV = impl.clCreateFromDX9MediaSurfaceKHR(context, CL_MEM_WRITE_ONLY,
@@ -1790,7 +1790,7 @@ void convertFromDirect3DSurface9(IDirect3DSurface9* pDirect3DSurface9, OutputArr
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clCreateFromDX9MediaSurfaceKHR failed");
 
 #ifdef HAVE_DIRECTX_NV12
-    cl_mem clImageUV;
+    cl_mem clImageUV = 0;
     if (_D3DFMT_NV12 == desc.Format)
     {
         clImageUV = impl.clCreateFromDX9MediaSurfaceKHR(context, CL_MEM_READ_ONLY,
