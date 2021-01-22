@@ -125,7 +125,8 @@ int main(int argc, char** argv)
             cerr << "Failed to set CAP_PROP_HW_ACCELERATION" << endl;
             return 1;
         }
-        accel = capture.get(CAP_PROP_HW_ACCELERATION);
+        cout << "VideoCapture backend = " << capture.getBackendName() << endl;
+        accel = (int)capture.get(CAP_PROP_HW_ACCELERATION);
         for (size_t i = 0; i < sizeof(acceleration_strings) / sizeof(acceleration_strings[0]); i++) {
             if (accel == acceleration_strings[i].acceleration) {
                 cout << "VideoCapture acceleration = " << acceleration_strings[i].str << endl;
@@ -149,7 +150,8 @@ int main(int argc, char** argv)
             cerr << "Failed to open VideoWriter" << endl;
             return 1;
         }
-        accel = capture.get(CAP_PROP_HW_ACCELERATION);
+        cout << "VideoWriter backend = " << writer.getBackendName() << endl;
+        accel = (int)capture.get(CAP_PROP_HW_ACCELERATION);
         for (size_t i = 0; i < sizeof(acceleration_strings) / sizeof(acceleration_strings[0]); i++) {
             if (accel == acceleration_strings[i].acceleration) {
                 cout << "VideoWriter acceleration = " << acceleration_strings[i].str << endl;
