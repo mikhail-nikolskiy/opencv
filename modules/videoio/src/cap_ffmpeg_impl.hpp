@@ -1621,15 +1621,11 @@ bool CvCapture_FFMPEG::setProperty( int property_id, double value )
         return false;
 #endif
     case CAP_PROP_HW_ACCELERATION:
-        if (!sizeof(hw_device_types))
-            return false;
         hw_type = (VideoAccelerationType)value;
         if (!open(filename)) // reopen file. // TODO: reopen camera
             return false;
         return (video_st && video_st->codec && video_st->codec->hw_device_ctx);
     case CAP_PROP_HW_DEVICE:
-        if (!sizeof(hw_device_types))
-            return false;
         hw_device = (int)value;
         if (hw_type) {
             return open(filename);

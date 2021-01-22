@@ -109,16 +109,6 @@ extern "C" {
 
 using namespace cv;
 
-static struct {
-    VideoAccelerationType type;
-    AVHWDeviceType ffmpeg_type;
-} hw_device_types[] = {
-    { VIDEO_ACCELERATION_QSV, AV_HWDEVICE_TYPE_QSV },
-    { VIDEO_ACCELERATION_D3D11, AV_HWDEVICE_TYPE_D3D11VA },
-    { VIDEO_ACCELERATION_D3D9, AV_HWDEVICE_TYPE_DXVA2 },
-    { VIDEO_ACCELERATION_VAAPI, AV_HWDEVICE_TYPE_VAAPI }
-};
-
 #ifdef HAVE_VA
 static VADisplay hw_get_va_display(AVHWDeviceContext* hw_device_ctx) {
     if (hw_device_ctx->type == AV_HWDEVICE_TYPE_VAAPI) {
@@ -316,12 +306,23 @@ AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_device) {
 
     ocl::OpenCLExecutionContext& ocl_context = ocl::OpenCLExecutionContext::getCurrentRef();
 
+    static struct {
+        VideoAccelerationType type;
+        AVHWDeviceType ffmpeg_type;
+    } hw_device_types[] = {
+        { VIDEO_ACCELERATION_QSV, AV_HWDEVICE_TYPE_QSV },
+        { VIDEO_ACCELERATION_D3D11, AV_HWDEVICE_TYPE_D3D11VA },
+        { VIDEO_ACCELERATION_D3D9, AV_HWDEVICE_TYPE_DXVA2 },
+        { VIDEO_ACCELERATION_VAAPI, AV_HWDEVICE_TYPE_VAAPI }
+    };
+
     char device[128] = "";
     for (size_t i = 0; i < sizeof(hw_device_types) / sizeof(hw_device_types[0]); i++) {
         if (!(*hw_type & hw_device_types[i].type))
             continue;
         AVHWDeviceType device_type = hw_device_types[i].ffmpeg_type;
 
+        // create media context on media device attached to OpenCL context
         AVBufferRef *hw_device_ctx = hw_create_device_from_existent(ocl_context, device_type);
         if (hw_device_ctx != NULL) {
             *hw_type = hw_device_types[i].type;
@@ -329,7 +330,7 @@ AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_device) {
             return hw_device_ctx;
         }
 
-        // create new media context and bind to new OpenCL context only if OpenCL context not set yet
+        // if OpenCL context not set yet, create new media context and bind it to new OpenCL context
         if (ocl_context.empty()) {
             char *pdevice = NULL;
             if (*hw_device >= 0 && *hw_device < 100000) {
@@ -348,6 +349,7 @@ AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_device) {
             }
         }
     }
+
     *hw_type = VIDEO_ACCELERATION_NONE;
     return NULL;
 }
