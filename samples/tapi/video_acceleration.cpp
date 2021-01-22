@@ -151,7 +151,7 @@ int main(int argc, char** argv)
             return 1;
         }
         cout << "VideoWriter backend = " << writer.getBackendName() << endl;
-        accel = (int)capture.get(CAP_PROP_HW_ACCELERATION);
+        accel = (int)writer.get(CAP_PROP_HW_ACCELERATION);
         for (size_t i = 0; i < sizeof(acceleration_strings) / sizeof(acceleration_strings[0]); i++) {
             if (accel == acceleration_strings[i].acceleration) {
                 cout << "VideoWriter acceleration = " << acceleration_strings[i].str << endl;
