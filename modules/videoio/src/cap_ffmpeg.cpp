@@ -217,7 +217,15 @@ public:
         ffmpegWriter = 0;
     }
 
-    virtual double getProperty(int) const CV_OVERRIDE { return 0; }
+    virtual double getProperty(int propId) const CV_OVERRIDE {
+        if (propId == CAP_PROP_HW_ACCELERATION) {
+            return ffmpegWriter->hw_type;
+        }
+        else if (propId == VIDEOWRITER_PROP_HW_DEVICE) {
+            return ffmpegWriter->hw_device;
+        }
+        return 0;
+    }
     virtual bool setProperty(int, double) CV_OVERRIDE { return false; }
     virtual bool isOpened() const CV_OVERRIDE { return ffmpegWriter != 0; }
 
