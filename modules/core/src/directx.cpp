@@ -1098,7 +1098,7 @@ static void __convertToD3D11Texture2DKHR(InputArray src, ID3D11Texture2D* pD3D11
     CV_Assert(textureType == srcType);
 
     Size srcSize = src.size();
-    CV_Assert(srcSize.width == (int)desc.Width && srcSize.height == (int)desc.Height);
+    CV_Assert(srcSize.width <= (int)desc.Width && srcSize.height <= (int)desc.Height);
 
     UMat u = src.getUMat();
 
@@ -1197,7 +1197,7 @@ static void __convertToD3D11Texture2DNV(InputArray src, ID3D11Texture2D* pD3D11T
     CV_Assert(textureType == srcType);
 
     Size srcSize = src.size();
-    CV_Assert(srcSize.width == (int)desc.Width && srcSize.height == (int)desc.Height);
+    CV_Assert(srcSize.width <= (int)desc.Width && srcSize.height <= (int)desc.Height);
 
     UMat u = src.getUMat();
 
@@ -1535,7 +1535,7 @@ void convertToD3D10Texture2D(InputArray src, ID3D10Texture2D* pD3D10Texture2D)
     CV_Assert(textureType == srcType);
 
     Size srcSize = src.size();
-    CV_Assert(srcSize.width == (int)desc.Width && srcSize.height == (int)desc.Height);
+    CV_Assert(srcSize.width <= (int)desc.Width && srcSize.height <= (int)desc.Height);
 
     using namespace cv::ocl;
     Context& ctx = Context::getDefault();
@@ -1662,7 +1662,7 @@ void convertToDirect3DSurface9(InputArray src, IDirect3DSurface9* pDirect3DSurfa
     CV_Assert(surfaceType == srcType);
 
     Size srcSize = src.size();
-    CV_Assert(srcSize.width == (int)desc.Width && srcSize.height == (int)desc.Height);
+    CV_Assert(srcSize.width <= (int)desc.Width && srcSize.height <= (int)desc.Height);
 
     using namespace cv::ocl;
     Context& ctx = Context::getDefault();

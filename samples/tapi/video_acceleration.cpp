@@ -16,9 +16,11 @@ const char* keys =
 "{ backend    | ffmpeg | VideoCapture and VideoWriter backend, valid values: 'any', 'ffmpeg', 'mf', 'gstreamer' }"
 "{ accel      | any    | GPU Video Acceleration, valid values: 'none', 'any', 'd3d9', 'd3d11', 'vaapi', 'qsv' }"
 "{ device     | -1     | Video Acceleration device (GPU) index (-1 means default device) }"
-"{ invert     | false  | apply simple image processing - invert pixels by calling cv::bitwise_not }"
-"{ codec      | H264   | codec id (four characters string) of output file encoder }"
+"{ out_w      |        | output width (resize by calling cv::resize) }"
+"{ out_h      |        | output height (resize by calling cv::resize) }"
+"{ bitwise_not| false  | apply simple image processing - bitwise_not pixels by calling cv::bitwise_not }"
 "{ opencl     | true   | use OpenCL (inside VideoCapture/VideoWriter and for image processing) }"
+"{ codec      | H264   | codec id (four characters string) of output file encoder }"
 "{ h help     |        | print help message }";
 
 struct {
@@ -90,8 +92,10 @@ int main(int argc, char** argv)
     string outfile = cmd.get<string>("o");
     string codec = cmd.get<string>("codec");
     int device = cmd.get<int>("device");
+    int out_w = cmd.get<int>("out_w");
+    int out_h = cmd.get<int>("out_h");
     bool use_opencl = cmd.get<bool>("opencl");
-    bool invert = cmd.get<bool>("invert");
+    bool bitwise_not = cmd.get<bool>("bitwise_not");
 
     cv::VideoCaptureAPIs backend = cv::CAP_ANY;
     string backend_str = cmd.get<string>("backend");
@@ -141,7 +145,10 @@ int main(int argc, char** argv)
         const char* codec_str = codec.c_str();
         int fourcc = VideoWriter::fourcc(codec_str[0], codec_str[1], codec_str[2], codec_str[3]);
         double fps = capture.get(CAP_PROP_FPS);
-        Size frameSize = { (int)capture.get(CAP_PROP_FRAME_WIDTH), (int)capture.get(CAP_PROP_FRAME_HEIGHT) };
+        Size frameSize = { out_w, out_h };
+        if (!out_w || !out_h) {
+            frameSize = { (int)capture.get(CAP_PROP_FRAME_WIDTH), (int)capture.get(CAP_PROP_FRAME_HEIGHT) };
+        }
         writer = VideoWriter(outfile, backend, fourcc, fps, frameSize, {
                 VIDEOWRITER_PROP_HW_ACCELERATION, accel,
                 VIDEOWRITER_PROP_HW_DEVICE, device
@@ -165,30 +172,37 @@ int main(int argc, char** argv)
 
     FPSCounter fps_counter(0.5); // print FPS every 0.5 seconds
 
+    UMat frame, frame2, frame3;
+
     for (;;)
     {
-        UMat frame, outframe;
-
         capture.read(frame);
         if (frame.empty()) {
             cout << "End of stream" << endl;
             break;
         }
 
-        if (invert) {
-            cv::bitwise_not(frame, outframe);
+        if (out_w && out_h) {
+            cv::resize(frame, frame2, cv::Size(out_w, out_h));
             //cv::cvtColor(frame, outframe, COLOR_BGRA2RGBA);
         }
         else {
-            outframe = frame;
+            frame2 = frame;
+        }
+
+        if (bitwise_not) {
+            cv::bitwise_not(frame2, frame3);
+        }
+        else {
+            frame3 = frame2;
         }
 
         if (writer.isOpened()) {
-            writer.write(outframe);
+            writer.write(frame3);
         }
 
         if (outfile.empty()) {
-            imshow("output", outframe);
+            imshow("output", frame3);
             char key = (char) waitKey(1);
             if (key == 27)
                 break;

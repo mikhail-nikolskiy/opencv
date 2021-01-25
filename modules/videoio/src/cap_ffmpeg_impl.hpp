@@ -1657,6 +1657,8 @@ struct CvVideoWriter_FFMPEG
     int               frame_idx;
     bool              ok;
     struct SwsContext *img_convert_ctx;
+    VideoAccelerationType hw_type;
+    int               hw_device;
 };
 
 static const char * icvFFMPEGErrStr(int err)
@@ -1717,6 +1719,8 @@ void CvVideoWriter_FFMPEG::init()
     img_convert_ctx = 0;
     frame_width = frame_height = 0;
     frame_idx = 0;
+    hw_type = VIDEO_ACCELERATION_NONE;
+    hw_device = -1;
     ok = false;
 }
 
@@ -2230,8 +2234,6 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
 {
     InternalFFMpegRegister::init();
     const bool is_color = params.get(VIDEOWRITER_PROP_IS_COLOR, true);
-    VideoAccelerationType hw_type = (VideoAccelerationType)params.get<int>(VIDEOWRITER_PROP_HW_ACCELERATION, VIDEO_ACCELERATION_NONE);
-    int hw_device = (VideoAccelerationType)params.get<int>(VIDEOWRITER_PROP_HW_DEVICE, -1);
     CV_CODEC_ID codec_id = CV_CODEC(CODEC_ID_NONE);
     int err;
     AVPixelFormat codec_pix_fmt;
@@ -2440,6 +2442,8 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
     double bitrate = std::min(bitrate_scale*fps*width*height, (double)INT_MAX/2);
 
     // HW device context and HW frames context
+    hw_type = (VideoAccelerationType)params.get<int>(VIDEOWRITER_PROP_HW_ACCELERATION, VIDEO_ACCELERATION_NONE);
+    hw_device = (VideoAccelerationType)params.get<int>(VIDEOWRITER_PROP_HW_DEVICE, -1);
     AVBufferRef *hw_device_ctx = hw_create_device(&hw_type, &hw_device);
     AVBufferRef *hw_frames_ctx = NULL;
 
