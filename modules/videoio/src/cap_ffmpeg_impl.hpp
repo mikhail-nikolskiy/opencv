@@ -2067,7 +2067,7 @@ bool CvVideoWriter_FFMPEG::writeFrame(const unsigned char* data, int step, int w
 
     if (!video_st->codec->hw_device_ctx) {
         picture->pts = frame_idx;
-        icv_av_write_frame_FFMPEG(oc, video_st, outbuf, outbuf_size, picture) >= 0;
+        icv_av_write_frame_FFMPEG(oc, video_st, outbuf, outbuf_size, picture);
     }
     else {
         // copy data to HW frame
