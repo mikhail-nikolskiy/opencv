@@ -54,8 +54,9 @@ extern "C" {
 #define HW_FRAMES_POOL_SIZE     20
 
 AVBufferRef *hw_create_device(cv::VideoAccelerationType *hw_type, int* hw_device);
-AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int height, AVPixelFormat format, int pool_size = HW_FRAMES_POOL_SIZE);
+AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int height, AVPixelFormat hw_format, AVPixelFormat sw_format, int pool_size = HW_FRAMES_POOL_SIZE);
 AVCodec *hw_find_codec(AVCodecID id, AVBufferRef *hw_device_ctx, int (*check_category)(const AVCodec *), AVPixelFormat *hw_pix_fmt = NULL);
+AVPixelFormat hw_get_format_callback(struct AVCodecContext *ctx, const enum AVPixelFormat * fmt);
 bool hw_copy_media_to_opencl(AVBufferRef* hw_device_ctx, AVFrame* picture, cv::OutputArray output);
 bool hw_copy_opencl_to_media(AVBufferRef* hw_device_ctx, cv::InputArray input, AVFrame* hw_frame);
 
@@ -336,6 +337,7 @@ static bool hw_check_opencl_context(AVHWDeviceContext* ctx) {
 #endif
     return false;
 }
+
 // Parameters hw_type and hw_device are input+output
 // The function returns HW device context (or NULL), and updates hw_type and hw_device to specific type/device
 AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_device) {
@@ -393,7 +395,7 @@ AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_device) {
     return NULL;
 }
 
-AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int height, AVPixelFormat format, int pool_size)
+AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int height, AVPixelFormat hw_format, AVPixelFormat sw_format, int pool_size)
 {
     AVBufferRef *hw_frames_ref = av_hwframe_ctx_alloc(hw_device_ctx);
     if (!hw_frames_ref) {
@@ -401,8 +403,8 @@ AVBufferRef* hw_create_frames(AVBufferRef *hw_device_ctx, int width, int height,
         return NULL;
     }
     AVHWFramesContext *frames_ctx = (AVHWFramesContext *)(hw_frames_ref->data);
-    frames_ctx->format    = format;
-    frames_ctx->sw_format = AV_PIX_FMT_NV12;
+    frames_ctx->format    = hw_format;
+    frames_ctx->sw_format = sw_format;
     frames_ctx->width     = width;
     frames_ctx->height    = height;
     frames_ctx->initial_pool_size = pool_size;
@@ -433,8 +435,10 @@ AVCodec *hw_find_codec(AVCodecID id, AVBufferRef *hw_device_ctx, int (*check_cat
                 if (!hw_config)
                     break;
                 if (hw_config->device_type == hw_type) {
-                    if (hw_pix_fmt)
+                    if ((hw_config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX) && hw_pix_fmt) {
+                        // codec requires frame pool (hw_frames_ctx) created by application
                         *hw_pix_fmt = hw_config->pix_fmt;
+                    }
                     return c;
                 }
             }
@@ -446,18 +450,26 @@ AVCodec *hw_find_codec(AVCodecID id, AVBufferRef *hw_device_ctx, int (*check_cat
     return NULL;
 }
 
-// In case of QSV we have to set this callback to select hardware format AV_PIX_FMT_QSV, not software format which is
-// first in the list of supported formats. Also in case of QSV we have to allocate frame pool.
-static enum AVPixelFormat hw_qsv_format_callback(struct AVCodecContext *ctx, const enum AVPixelFormat * fmt) {
-    for (int i = 0; ;i++) {
-        if (fmt[i] == AV_PIX_FMT_QSV) {
-            ctx->hw_frames_ctx = hw_create_frames(ctx->hw_device_ctx, ctx->width, ctx->height, AV_PIX_FMT_QSV);
-            if (ctx->hw_frames_ctx)
-                return AV_PIX_FMT_QSV;
+// Callback to select hardware pixel format (not software format) and allocate frame pool (hw_frames_ctx)
+AVPixelFormat hw_get_format_callback(struct AVCodecContext *ctx, const enum AVPixelFormat * fmt) {
+    if (!ctx->hw_device_ctx)
+        return fmt[0];
+    AVHWDeviceType hw_type = ((AVHWDeviceContext*)ctx->hw_device_ctx->data)->type;
+    for (int j = 0;; j++) {
+        const AVCodecHWConfig *hw_config = avcodec_get_hw_config(ctx->codec, j);
+        if (!hw_config)
+            break;
+        if ((hw_config->device_type == hw_type) && (hw_config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX)) {
+            for (int i = 0; fmt[i] != AV_PIX_FMT_NONE; i++) {
+                if (fmt[i] == hw_config->pix_fmt) {
+                    ctx->hw_frames_ctx = hw_create_frames(ctx->hw_device_ctx, ctx->width, ctx->height, fmt[i], AV_PIX_FMT_NV12);
+                    if (ctx->hw_frames_ctx)
+                        return fmt[i];
+                }
+            }
         }
-        if (!fmt[i])
-            return fmt[0];
     }
+    return fmt[0];
 }
 
 // GPU color conversion NV12->BGRA via OpenCL extensions
