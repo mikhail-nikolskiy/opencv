@@ -298,4 +298,3 @@ const AVCodecTag codec_bmp_tags[] = {
 #endif
     { AV_CODEC_ID_NONE, 0 },
 };
-
