@@ -3,6 +3,7 @@
 // of this distribution and at http://opencv.org/license.html.
 
 #include "test_precomp.hpp"
+#include "opencv2/core/ocl.hpp"
 
 using namespace std;
 
@@ -357,6 +358,116 @@ TEST(videoio_ffmpeg, parallel)
             // Remove files
             for (int i = 0; i < NUM; ++i) {
                 remove(files[i].c_str());
+            }
+        }
+    }
+}
+
+TEST(videoio_ffmpeg, video_acceleration)
+{
+    if (!videoio_registry::hasBackend(CAP_FFMPEG))
+        throw SkipTestException("FFmpeg backend was not found");
+
+    const Size sz(640, 480);
+    const int frameNum = 10;
+    const Scalar color(Scalar::all(0));
+    const Point center(sz.height / 2, sz.width / 2);
+
+    struct {
+        VideoAccelerationType va_type;
+        const char* str;
+    } acceleration_list[] = {
+            {VIDEO_ACCELERATION_ANY,   "ANY"},
+            {VIDEO_ACCELERATION_QSV,   "QSV"},
+            {VIDEO_ACCELERATION_VAAPI, "VAAPI"},
+            {VIDEO_ACCELERATION_D3D9,  "D3D9"},
+            {VIDEO_ACCELERATION_D3D11, "D3D11"},
+    };
+
+    std::vector<std::string> codecid_list = {
+            "H264",
+            "XVID",
+    };
+
+    std::vector<bool> false_true = { false, true };
+
+    std::string filename = tempfile("videoio_ffmpeg_video_acceleration.avi");
+
+    auto getAccelString = [&](VideoAccelerationType va_type) {
+        if (va_type == VIDEO_ACCELERATION_NONE) return "NONE";
+        for (auto accel : acceleration_list) {
+            if (va_type == accel.va_type)
+                return accel.str;
+        }
+        return "UNKNOWN";
+    };
+
+    for (auto accel : acceleration_list) {
+        for (auto codecid : codecid_list) {
+            for (bool use_umat : false_true) {
+                std::cout << accel.str << " acceleration test on codec " << codecid << " and memory " << (use_umat ? "UMat" : "Mat") << std::endl;
+                remove(filename.c_str());
+                if (use_umat) { // release previous OpenCL context created on media device
+                    ocl::OpenCLExecutionContext::getCurrentRef().release();
+                    std::cout << "  useOpenCL = " << ocl::useOpenCL() << std::endl;
+                }
+                // Write video
+                {
+                    std::vector<int> params = { VIDEOWRITER_PROP_HW_ACCELERATION, (int)accel.va_type };
+                    VideoWriter writer(filename,
+                        CAP_FFMPEG,
+                        VideoWriter::fourcc(codecid[0], codecid[1], codecid[2], codecid[3]),
+                        25.0f,
+                        sz,
+                        params);
+                    EXPECT_TRUE(writer.isOpened());
+                    VideoAccelerationType va_type = (VideoAccelerationType)writer.get(CAP_PROP_HW_ACCELERATION);
+                    std::cout << "  VideoWriter acceleration = " << getAccelString(va_type) << std::endl;
+                    Mat frame(sz, CV_8UC3);
+                    for (int i = 0; i < frameNum; ++i) {
+                        generateFrame(frame, i, center, color);
+                        if (use_umat) {
+                            UMat umat;
+                            frame.copyTo(umat);
+                            writer.write(umat);
+                        }
+                        else {
+                            writer.write(frame);
+                        }
+                    }
+                }
+                // Read video and check PSNR on every frame
+                {
+                    VideoCapture reader(filename, CAP_FFMPEG);
+                    reader.set(CAP_PROP_HW_ACCELERATION, accel.va_type);
+                    ASSERT_TRUE(reader.isOpened());
+                    VideoAccelerationType va_type = (VideoAccelerationType)reader.get(CAP_PROP_HW_ACCELERATION);
+                    std::cout << "  VideoCapture acceleration = " << getAccelString(va_type) << std::endl;
+                    double min_psnr = 1000;
+                    Mat reference(sz, CV_8UC3);
+                    for (int i = 0; i < frameNum; ++i) {
+                        Mat actual;
+                        if (use_umat) {
+                            UMat umat;
+                            EXPECT_TRUE(reader.read(umat));
+                            umat.copyTo(actual);
+                        }
+                        else {
+                            EXPECT_TRUE(reader.read(actual));
+                        }
+                        EXPECT_FALSE(actual.empty());
+                        generateFrame(reference, i, center, color);
+                        EXPECT_EQ(reference.size(), actual.size());
+                        EXPECT_EQ(reference.depth(), actual.depth());
+                        EXPECT_EQ(reference.channels(), actual.channels());
+                        double psnr = cvtest::PSNR(actual, reference);
+                        EXPECT_GE(psnr, 35.0) << " frame " << i;
+                        if (psnr < min_psnr)
+                            min_psnr = psnr;
+                    }
+                    std::cout << "  Test finished with min PSNR = " << min_psnr << std::endl;
+                }
+                remove(filename.c_str());
             }
         }
     }

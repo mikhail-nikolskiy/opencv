@@ -982,6 +982,9 @@ bool CvCapture_FFMPEG::open( const char* _filename )
                 } else {
                     codec = avcodec_find_decoder_by_name(av_dict_get(dict, "video_codec", NULL, 0)->value);
                 }
+                hw_type = VIDEO_ACCELERATION_NONE;
+                if (enc->hw_device_ctx)
+                    av_buffer_unref(&enc->hw_device_ctx);
             }
             if (!codec || avcodec_open2(enc, codec, NULL) < 0)
                 goto exit_func;
@@ -1264,8 +1267,9 @@ bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* 
     AVFrame* sw_picture = picture;
     if (picture && picture->hw_frames_ctx) {
         sw_picture = av_frame_alloc();
-        if (av_hwframe_map(sw_picture, picture, AV_HWFRAME_MAP_READ) < 0) {
-            CV_Error(0, "Error mapping hw frame (av_hwframe_map)");
+        //if (av_hwframe_map(sw_picture, picture, AV_HWFRAME_MAP_READ) < 0) {
+        if (av_hwframe_transfer_data(sw_picture, picture, 0) < 0) {
+            CV_Error(0, "Error copying data GPU->CPU (av_hwframe_transfer_data)");
             return false;
         }
     }
@@ -2470,6 +2474,7 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
         }
         if (!codec) {
             codec = avcodec_find_encoder(codec_id); // SW encoder
+            hw_type = VIDEO_ACCELERATION_NONE;
             av_buffer_unref(&hw_device_ctx); // release HW device
         }
     }

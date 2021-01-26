@@ -223,10 +223,11 @@ static void hw_bind_opencl(AVBufferRef *ctx) {
             device_manager->CloseDeviceHandle(hDevice);
         }
     }
-    ID3D11Device *device = hw_get_d3d11_device(hw_device_ctx);
-    if (device) {
-        directx::ocl::initializeContextFromD3D11Device(device);
-    }
+    //TODO check if need to do device->AddRef() or OpenCL context does that automatically
+    //ID3D11Device *device = hw_get_d3d11_device(hw_device_ctx);
+    //if (device) {
+    //    directx::ocl::initializeContextFromD3D11Device(device);
+    //}
 #endif
 }
 
@@ -435,7 +436,8 @@ AVCodec *hw_find_codec(AVCodecID id, AVBufferRef *hw_device_ctx, int (*check_cat
                 if (!hw_config)
                     break;
                 if (hw_config->device_type == hw_type) {
-                    if ((hw_config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX) && hw_pix_fmt) {
+                    int m = hw_config->methods;
+                    if (!(m & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) && (m & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX) && hw_pix_fmt) {
                         // codec requires frame pool (hw_frames_ctx) created by application
                         *hw_pix_fmt = hw_config->pix_fmt;
                     }
@@ -453,23 +455,28 @@ AVCodec *hw_find_codec(AVCodecID id, AVBufferRef *hw_device_ctx, int (*check_cat
 // Callback to select hardware pixel format (not software format) and allocate frame pool (hw_frames_ctx)
 AVPixelFormat hw_get_format_callback(struct AVCodecContext *ctx, const enum AVPixelFormat * fmt) {
     if (!ctx->hw_device_ctx)
-        return fmt[0];
+        return AV_PIX_FMT_YUV420P;
     AVHWDeviceType hw_type = ((AVHWDeviceContext*)ctx->hw_device_ctx->data)->type;
     for (int j = 0;; j++) {
         const AVCodecHWConfig *hw_config = avcodec_get_hw_config(ctx->codec, j);
         if (!hw_config)
             break;
-        if ((hw_config->device_type == hw_type) && (hw_config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX)) {
+        if (hw_config->device_type == hw_type) {
             for (int i = 0; fmt[i] != AV_PIX_FMT_NONE; i++) {
                 if (fmt[i] == hw_config->pix_fmt) {
-                    ctx->hw_frames_ctx = hw_create_frames(ctx->hw_device_ctx, ctx->width, ctx->height, fmt[i], AV_PIX_FMT_NV12);
-                    if (ctx->hw_frames_ctx)
+                    if (hw_config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) {
                         return fmt[i];
+                    }
+                    if (hw_config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX) {
+                        ctx->hw_frames_ctx = hw_create_frames(ctx->hw_device_ctx, ctx->width, ctx->height, fmt[i], AV_PIX_FMT_NV12);
+                        if (ctx->hw_frames_ctx)
+                            return fmt[i];
+                    }
                 }
             }
         }
     }
-    return fmt[0];
+    return AV_PIX_FMT_YUV420P;
 }
 
 // GPU color conversion NV12->BGRA via OpenCL extensions
@@ -507,6 +514,7 @@ bool hw_copy_media_to_opencl(AVBufferRef* ctx, AVFrame* picture, cv::OutputArray
         return true;
     }
 #endif
+
     return false;
 }
 
