@@ -234,7 +234,6 @@ static void hw_bind_opencl(AVBufferRef *ctx) {
 static std::pair<AVHWDeviceType, void*> hw_query_opencl_context(ocl::OpenCLExecutionContext& ocl_context) {
     if (ocl_context.empty())
         return { AV_HWDEVICE_TYPE_NONE, NULL };
-    AVHWDeviceType base_hw_type = AV_HWDEVICE_TYPE_NONE;
     static struct {
         AVHWDeviceType hw_type;
         intptr_t cl_property;
@@ -247,7 +246,6 @@ static std::pair<AVHWDeviceType, void*> hw_query_opencl_context(ocl::OpenCLExecu
         { AV_HWDEVICE_TYPE_D3D11VA, CL_CONTEXT_D3D11_DEVICE_KHR },
 #endif
     };
-    void* media_device = NULL;
     cl_context context = (cl_context)ocl_context.getContext().ptr();
     ::size_t size = 0;
     clGetContextInfo(context, CL_CONTEXT_PROPERTIES, 0, NULL, &size);
