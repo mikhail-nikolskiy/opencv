@@ -967,17 +967,21 @@ bool CvCapture_FFMPEG::open( const char* _filename )
             int enc_height = enc->height;
 
             enc->hw_device_ctx = hw_create_device(&hw_type, &hw_device);
-            if (hw_type == VIDEO_ACCELERATION_QSV) {
-                enc->get_format = hw_qsv_format_callback; // callback selects QSV pixel format
-            }
 
-            AVCodec *codec;
-			if (enc->hw_device_ctx) {
-                codec = hw_find_codec(enc->codec_id, enc->hw_device_ctx, av_codec_is_decoder);
-            } else if(av_dict_get(dict, "video_codec", NULL, 0) == NULL) {
-                codec = avcodec_find_decoder(enc->codec_id);
-            } else {
-                codec = avcodec_find_decoder_by_name(av_dict_get(dict, "video_codec", NULL, 0)->value);
+            AVCodec *codec = NULL;
+			if (enc->hw_device_ctx) { // HW decoder
+                AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
+                codec = hw_find_codec(enc->codec_id, enc->hw_device_ctx, av_codec_is_decoder, &hw_pix_fmt);
+                if (hw_pix_fmt != AV_PIX_FMT_NONE) {
+                    enc->get_format = hw_get_format_callback; // callback to ensure HW pixel format, not SW format
+                }
+            }
+			if (!codec) { // SW decoder
+                if (av_dict_get(dict, "video_codec", NULL, 0) == NULL) {
+                    codec = avcodec_find_decoder(enc->codec_id);
+                } else {
+                    codec = avcodec_find_decoder_by_name(av_dict_get(dict, "video_codec", NULL, 0)->value);
+                }
             }
             if (!codec || avcodec_open2(enc, codec, NULL) < 0)
                 goto exit_func;
@@ -2458,7 +2462,7 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
         AVPixelFormat hw_format = AV_PIX_FMT_NONE;
         codec = hw_find_codec(codec_id, hw_device_ctx, av_codec_is_encoder, &hw_format);
         if (codec) {
-            hw_frames_ctx = hw_create_frames(hw_device_ctx, width, height, hw_format);
+            hw_frames_ctx = hw_create_frames(hw_device_ctx, width, height, hw_format, AV_PIX_FMT_NV12);
             if (hw_frames_ctx)
                 codec_pix_fmt = hw_format;
             else

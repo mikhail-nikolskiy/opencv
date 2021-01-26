@@ -252,84 +252,113 @@ TEST(videoio_ffmpeg, parallel)
     const Scalar color(Scalar::all(0));
     const Point center(sz.height / 2, sz.width / 2);
 
-    // Generate filenames
-    vector<string> files;
-    for (int i = 0; i < NUM; ++i)
-    {
-        ostringstream stream;
-        stream << i << ".avi";
-        files.push_back(tempfile(stream.str().c_str()));
-    }
-    // Write videos
-    {
-        vector< Ptr<VideoWriter> > writers(NUM);
-        auto makeWriters = [&](const Range &r)
-        {
-            for (int i = r.start; i != r.end; ++i)
-                writers[i] = makePtr<VideoWriter>(files[i],
-                                                  CAP_FFMPEG,
-                                                  VideoWriter::fourcc('X','V','I','D'),
-                                                  25.0f,
-                                                  sz);
-        };
-        parallel_for_(R, makeWriters, GRAN);
-        for(int i = 0; i < NUM; ++i)
-        {
-            ASSERT_TRUE(writers[i]);
-            ASSERT_TRUE(writers[i]->isOpened());
-        }
-        auto writeFrames = [&](const Range &r)
-        {
-            for (int j = r.start; j < r.end; ++j)
-            {
-                Mat frame(sz, CV_8UC3);
-                for (int i = 0; i < frameNum; ++i)
-                {
-                    generateFrame(frame, i, center, color);
-                    writers[j]->write(frame);
-                }
+    struct {
+        VideoAccelerationType va_type;
+        const char *str;
+    } acceleration_list[] = {
+            {VIDEO_ACCELERATION_NONE,  "NONE"},
+            {VIDEO_ACCELERATION_ANY,   "ANY"},
+            {VIDEO_ACCELERATION_D3D9,  "D3D9"},
+            {VIDEO_ACCELERATION_D3D11, "D3D11"},
+            {VIDEO_ACCELERATION_VAAPI, "VAAPI"},
+            {VIDEO_ACCELERATION_QSV,   "QSV"}
+    };
+
+    std::vector<std::string> codecid_list = {
+            "XVID", "H264"
+    };
+
+    for (auto accel: acceleration_list) {
+        for (auto codecid: codecid_list) {
+            std::cout << "Testing acceleration " << accel.str << " on codec " << codecid << std::endl;
+            // Generate filenames
+            vector<string> files;
+            for (int i = 0; i < NUM; ++i) {
+                ostringstream stream;
+                stream << i << ".avi";
+                files.push_back(tempfile(stream.str().c_str()));
             }
-        };
-        parallel_for_(R, writeFrames, GRAN);
-    }
-    // Read videos
-    {
-        vector< Ptr<VideoCapture> > readers(NUM);
-        auto makeCaptures = [&](const Range &r)
-        {
-            for (int i = r.start; i != r.end; ++i)
-                readers[i] = makePtr<VideoCapture>(files[i], CAP_FFMPEG);
-        };
-        parallel_for_(R, makeCaptures, GRAN);
-        for(int i = 0; i < NUM; ++i)
-        {
-            ASSERT_TRUE(readers[i]);
-            ASSERT_TRUE(readers[i]->isOpened());
-        }
-        auto readFrames = [&](const Range &r)
-        {
-            for (int j = r.start; j < r.end; ++j)
+            // Write videos
             {
-                Mat reference(sz, CV_8UC3);
-                for (int i = 0; i < frameNum; ++i)
-                {
-                    Mat actual;
-                    EXPECT_TRUE(readers[j]->read(actual));
-                    EXPECT_FALSE(actual.empty());
-                    generateFrame(reference, i, center, color);
-                    EXPECT_EQ(reference.size(), actual.size());
-                    EXPECT_EQ(reference.depth(), actual.depth());
-                    EXPECT_EQ(reference.channels(), actual.channels());
-                    EXPECT_GE(cvtest::PSNR(actual, reference), 35.0) << "cap" << j << ", frame " << i;
+                vector<Ptr<VideoWriter> > writers(NUM);
+                auto makeWriters = [&](const Range &r) {
+                    for (int i = r.start; i != r.end; ++i) {
+                        std::vector<int> params = {VIDEOWRITER_PROP_HW_ACCELERATION, (int)accel.va_type};
+                        writers[i] = makePtr<VideoWriter>(files[i],
+                                                          CAP_FFMPEG,
+                                                          VideoWriter::fourcc(codecid[0], codecid[1], codecid[2], codecid[3]),
+                                                          25.0f,
+                                                          sz,
+                                                          params);
+                        if (accel.va_type != VIDEO_ACCELERATION_NONE && writers[i]->get(CAP_PROP_HW_ACCELERATION) != accel.va_type)
+                            writers[i].release();
+                    }
+                };
+                parallel_for_(R, makeWriters, GRAN);
+                int i;
+                for (i = 0; i < NUM; ++i) {
+                    if (accel.va_type != VIDEO_ACCELERATION_NONE && (!writers[i] || !writers[i]->isOpened())) {
+                        std::cout << "  Acceleration " << accel.str << " not supported, skipping test" << std::endl;
+                        break;
+                    }
+                    ASSERT_TRUE(writers[i]);
+                    ASSERT_TRUE(writers[i]->isOpened());
                 }
+                if (i < NUM)
+                    continue;
+                auto writeFrames = [&](const Range &r) {
+                    for (int j = r.start; j < r.end; ++j) {
+                        Mat frame(sz, CV_8UC3);
+                        for (int f = 0; f < frameNum; ++f) {
+                            generateFrame(frame, f, center, color);
+                            writers[j]->write(frame);
+                        }
+                    }
+                };
+                parallel_for_(R, writeFrames, GRAN);
             }
-        };
-        parallel_for_(R, readFrames, GRAN);
-    }
-    // Remove files
-    for(int i = 0; i < NUM; ++i)
-    {
-        remove(files[i].c_str());
+            // Read videos
+            {
+                vector<Ptr<VideoCapture> > readers(NUM);
+                auto makeCaptures = [&](const Range &r) {
+                    for (int i = r.start; i != r.end; ++i) {
+                        readers[i] = makePtr<VideoCapture>(files[i], CAP_FFMPEG);
+                        readers[i]->set(CAP_PROP_HW_ACCELERATION, accel.va_type);
+                        ASSERT_TRUE(readers[i]->get(CAP_PROP_HW_ACCELERATION) == accel.va_type);
+                    }
+                };
+                parallel_for_(R, makeCaptures, GRAN);
+                for (int i = 0; i < NUM; ++i) {
+                    ASSERT_TRUE(readers[i]);
+                    ASSERT_TRUE(readers[i]->isOpened());
+                }
+                double min_psnr = 1000;
+                auto readFrames = [&](const Range &r) {
+                    for (int j = r.start; j < r.end; ++j) {
+                        Mat reference(sz, CV_8UC3);
+                        for (int i = 0; i < frameNum; ++i) {
+                            Mat actual;
+                            EXPECT_TRUE(readers[j]->read(actual));
+                            EXPECT_FALSE(actual.empty());
+                            generateFrame(reference, i, center, color);
+                            EXPECT_EQ(reference.size(), actual.size());
+                            EXPECT_EQ(reference.depth(), actual.depth());
+                            EXPECT_EQ(reference.channels(), actual.channels());
+                            double psnr = cvtest::PSNR(actual, reference);
+                            EXPECT_GE(psnr, 35.0) << "cap" << j << ", frame " << i;
+                            if (psnr < min_psnr)
+                                min_psnr = psnr;
+                        }
+                    }
+                };
+                parallel_for_(R, readFrames, GRAN);
+                std::cout << "  Min PSNR = " << min_psnr << std::endl;
+            }
+            // Remove files
+            for (int i = 0; i < NUM; ++i) {
+                remove(files[i].c_str());
+            }
+        }
     }
 }
 

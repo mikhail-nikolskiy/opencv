@@ -34,7 +34,7 @@ struct {
 };
 
 struct {
-    int acceleration;
+    VideoAccelerationType acceleration;
     const char* str;
 } acceleration_strings[] = {
     { VIDEO_ACCELERATION_NONE, "none" },
