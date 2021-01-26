@@ -969,14 +969,14 @@ bool CvCapture_FFMPEG::open( const char* _filename )
             enc->hw_device_ctx = hw_create_device(&hw_type, &hw_device);
 
             AVCodec *codec = NULL;
-			if (enc->hw_device_ctx) { // HW decoder
+            if (enc->hw_device_ctx) { // HW decoder
                 AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
                 codec = hw_find_codec(enc->codec_id, enc->hw_device_ctx, av_codec_is_decoder, &hw_pix_fmt);
                 if (hw_pix_fmt != AV_PIX_FMT_NONE) {
                     enc->get_format = hw_get_format_callback; // callback to ensure HW pixel format, not SW format
                 }
             }
-			if (!codec) { // SW decoder
+            if (!codec) { // SW decoder
                 if (av_dict_get(dict, "video_codec", NULL, 0) == NULL) {
                     codec = avcodec_find_decoder(enc->codec_id);
                 } else {
@@ -1263,7 +1263,7 @@ bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* 
         return p.data != NULL;
     }
 
-    // if hardware frame, map it to system memory
+    // if hardware frame, copy it to system memory
     AVFrame* sw_picture = picture;
     if (picture && picture->hw_frames_ctx) {
         sw_picture = av_frame_alloc();
@@ -1289,7 +1289,7 @@ bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* 
         img_convert_ctx = sws_getCachedContext(
                 img_convert_ctx,
                 buffer_width, buffer_height,
-                sw_picture->format ? (AVPixelFormat)sw_picture->format : video_st->codec->pix_fmt,
+                (AVPixelFormat)sw_picture->format,
                 buffer_width, buffer_height,
                 AV_PIX_FMT_BGR24,
                 SWS_BICUBIC,
@@ -2070,7 +2070,7 @@ bool CvVideoWriter_FFMPEG::writeFrame(const unsigned char* data, int step, int w
         bool ret = icv_av_write_frame_FFMPEG(oc, video_st, outbuf, outbuf_size, picture) >= 0;
     }
     else {
-        // transfer data to HW frame
+        // copy data to HW frame
         AVFrame* hw_frame = av_frame_alloc();
         if (!hw_frame) {
             return false;
@@ -2458,7 +2458,7 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
     // Find the video encoder
     AVCodec* codec = NULL;
     if (codec_id == AV_CODEC_ID_NONE) {
-	    codec_id = av_guess_codec(oc->oformat, NULL, oc->filename, NULL, AVMEDIA_TYPE_VIDEO);
+        codec_id = av_guess_codec(oc->oformat, NULL, oc->filename, NULL, AVMEDIA_TYPE_VIDEO);
     }
     if (!hw_device_ctx) {
         codec = avcodec_find_encoder(codec_id);

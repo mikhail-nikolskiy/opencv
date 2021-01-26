@@ -1675,10 +1675,10 @@ void convertToDirect3DSurface9(InputArray src, IDirect3DSurface9* pDirect3DSurfa
     CV_Assert(u.isContinuous());
 
     cl_int status = 0;
-    cl_dx9_surface_info_khr surfaceInfo = { pDirect3DSurface9, (HANDLE)surfaceSharedHandle };
+    cl_dx9_surface_info_khr surfaceInfo = {pDirect3DSurface9, (HANDLE)surfaceSharedHandle};
     cl_mem clImage = impl.clCreateFromDX9MediaSurfaceKHR(context, CL_MEM_WRITE_ONLY,
         impl.isDirect3DDevice9Ex ? CL_ADAPTER_D3D9EX_KHR : CL_ADAPTER_D3D9_KHR,
-        &surfaceInfo, 0, &status);
+            &surfaceInfo, 0, &status);
     if (status != CL_SUCCESS)
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clCreateFromDX9MediaSurfaceKHR failed");
 
@@ -1782,10 +1782,10 @@ void convertFromDirect3DSurface9(IDirect3DSurface9* pDirect3DSurface9, OutputArr
     CV_Assert(u.isContinuous());
 
     cl_int status = 0;
-    cl_dx9_surface_info_khr surfaceInfo = { pDirect3DSurface9, (HANDLE)surfaceSharedHandle };
+    cl_dx9_surface_info_khr surfaceInfo = {pDirect3DSurface9, (HANDLE)surfaceSharedHandle};
     cl_mem clImage = impl.clCreateFromDX9MediaSurfaceKHR(context, CL_MEM_READ_ONLY,
-        impl.isDirect3DDevice9Ex ? CL_ADAPTER_D3D9EX_KHR : CL_ADAPTER_D3D9_KHR,
-        &surfaceInfo, 0, &status);
+            impl.isDirect3DDevice9Ex ? CL_ADAPTER_D3D9EX_KHR : CL_ADAPTER_D3D9_KHR,
+            &surfaceInfo, 0, &status);
     if (status != CL_SUCCESS)
         CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clCreateFromDX9MediaSurfaceKHR failed");
 
