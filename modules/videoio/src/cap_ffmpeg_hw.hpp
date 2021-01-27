@@ -371,19 +371,23 @@ AVBufferRef *hw_create_device(VideoAccelerationType *hw_type, int* hw_device) {
 
         // create new media context
         char* pdevice = NULL;
+        AVDictionary *options = NULL;
         if (*hw_device >= 0 && *hw_device < 100000) {
-            if (device_type == AV_HWDEVICE_TYPE_VAAPI) {
-                snprintf(device, sizeof(device), "/dev/dri/renderD%d", 128 + *hw_device);
-#ifdef HAVE_MFX
-            } else if (device_type == AV_HWDEVICE_TYPE_QSV) {
-                snprintf(device, sizeof(device), "%d", MFX_IMPL_HARDWARE_ANY + *hw_device);
+#ifdef _WIN32
+            snprintf(device, sizeof(device), "%d", *hw_device);
+#else
+            snprintf(device, sizeof(device), "/dev/dri/renderD%d", 128 + *hw_device);
 #endif
+            if (device_type == AV_HWDEVICE_TYPE_QSV) {
+                av_dict_set(&options, "child_device", device, 0);
             } else {
-                snprintf(device, sizeof(device), "%d", *hw_device);
+                pdevice = device;
             }
-            pdevice = device;
         }
-        if (av_hwdevice_ctx_create(&hw_device_ctx, device_type, pdevice, NULL, 0) == 0) {
+        int ret = av_hwdevice_ctx_create(&hw_device_ctx, device_type, pdevice, options, 0);
+        if (options)
+            av_dict_free(&options);
+        if (ret >= 0) {
             // if OpenCL context not set yet, create it with binding to media device
             if (ocl_context.empty() && ocl::useOpenCL()) {
                 hw_bind_opencl(hw_device_ctx);
