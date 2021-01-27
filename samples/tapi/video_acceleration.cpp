@@ -47,7 +47,7 @@ struct {
 
 class FPSCounter {
 public:
-    FPSCounter(double interval) : interval(interval) {
+    FPSCounter(double _interval) : interval(_interval) {
     }
 
     ~FPSCounter() {
@@ -106,7 +106,7 @@ int main(int argc, char** argv)
         }
     }
 
-    int accel = VIDEO_ACCELERATION_ANY;
+    VideoAccelerationType accel = VIDEO_ACCELERATION_ANY;
     string accel_str = cmd.get<string>("accel");
     for (size_t i = 0; i < sizeof(acceleration_strings) / sizeof(acceleration_strings[0]); i++) {
         if (accel_str == acceleration_strings[i].str) {
@@ -130,7 +130,7 @@ int main(int argc, char** argv)
             return 1;
         }
         cout << "VideoCapture backend = " << capture.getBackendName() << endl;
-        accel = (int)capture.get(CAP_PROP_HW_ACCELERATION);
+        accel = (VideoAccelerationType)capture.get(CAP_PROP_HW_ACCELERATION);
         for (size_t i = 0; i < sizeof(acceleration_strings) / sizeof(acceleration_strings[0]); i++) {
             if (accel == acceleration_strings[i].acceleration) {
                 cout << "VideoCapture acceleration = " << acceleration_strings[i].str << endl;
@@ -150,7 +150,7 @@ int main(int argc, char** argv)
             frameSize = { (int)capture.get(CAP_PROP_FRAME_WIDTH), (int)capture.get(CAP_PROP_FRAME_HEIGHT) };
         }
         writer = VideoWriter(outfile, backend, fourcc, fps, frameSize, {
-                VIDEOWRITER_PROP_HW_ACCELERATION, accel,
+                VIDEOWRITER_PROP_HW_ACCELERATION, (int)accel,
                 VIDEOWRITER_PROP_HW_DEVICE, device
         });
         if (!writer.isOpened()) {
@@ -158,7 +158,7 @@ int main(int argc, char** argv)
             return 1;
         }
         cout << "VideoWriter backend = " << writer.getBackendName() << endl;
-        accel = (int)writer.get(CAP_PROP_HW_ACCELERATION);
+        accel = (VideoAccelerationType)writer.get(CAP_PROP_HW_ACCELERATION);
         for (size_t i = 0; i < sizeof(acceleration_strings) / sizeof(acceleration_strings[0]); i++) {
             if (accel == acceleration_strings[i].acceleration) {
                 cout << "VideoWriter acceleration = " << acceleration_strings[i].str << endl;

@@ -1970,7 +1970,7 @@ static int icv_av_write_frame_FFMPEG( AVFormatContext * oc, AVStream * video_st,
 }
 
 /// write a frame with FFMPEG
-bool CvVideoWriter_FFMPEG::writeFrame(const unsigned char* data, int step, int width, int height, int cn, int origin)
+bool CvVideoWriter_FFMPEG::writeFrame( const unsigned char* data, int step, int width, int height, int cn, int origin )
 {
     // check parameters
     if (input_pix_fmt == AV_PIX_FMT_BGR24) {
