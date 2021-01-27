@@ -338,7 +338,7 @@ TEST(videoio_ffmpeg, video_acceleration)
     if (!videoio_registry::hasBackend(CAP_FFMPEG))
         throw SkipTestException("FFmpeg backend was not found");
 
-    const Size sz(640, 480);
+    const Size sz(640 - 2, 480 - 2);
     const int frameNum = 10;
     const Scalar color(Scalar::all(0));
     const Point center(sz.height / 2, sz.width / 2);
