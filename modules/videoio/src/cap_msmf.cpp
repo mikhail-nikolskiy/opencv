@@ -751,7 +751,8 @@ bool CvCapture_MSMF::configureHW(bool enable)
         D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
             D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0,
             D3D_FEATURE_LEVEL_9_3,  D3D_FEATURE_LEVEL_9_2, D3D_FEATURE_LEVEL_9_1 };
-        if (SUCCEEDED(D3D11CreateDevice(pAdapter.Get(), D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+        D3D_DRIVER_TYPE driverType = pAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
+        if (SUCCEEDED(D3D11CreateDevice(pAdapter.Get(), driverType, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
             levels, sizeof(levels) / sizeof(*levels), D3D11_SDK_VERSION, &D3DDev, NULL, NULL)))
         {
             // NOTE: Getting ready for multi-threaded operation
@@ -766,6 +767,21 @@ bool CvCapture_MSMF::configureHW(bool enable)
                     if (SUCCEEDED(D3DMgr->ResetDevice(D3DDev.Get(), mgrRToken)))
                     {
                         captureMode = MODE_HW;
+                        // Log adapter description
+                        _ComPtr<IDXGIDevice> dxgiDevice;
+                        if (SUCCEEDED(D3DDev->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice))))
+                        {
+                            _ComPtr<IDXGIAdapter> adapter;
+                            if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter)))
+                            {
+                                DXGI_ADAPTER_DESC desc;
+                                if (SUCCEEDED(adapter->GetDesc(&desc))) {
+                                    std::wstring wname(desc.Description);
+                                    std::string name(wname.begin(), wname.end());
+                                    CV_LOG_INFO(NULL, "MSMF: Using D3D11 video acceleration on GPU device: " << name);
+                                }
+                            }
+                        }
 #ifdef HAVE_DIRECTX_NV12
                         cv::directx::ocl::initializeContextFromD3D11Device(D3DDev.Get());
 #endif
