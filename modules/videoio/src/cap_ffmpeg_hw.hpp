@@ -483,23 +483,11 @@ public:
         {
             updateAccelList_(accel_list, va_type, isEncoder, dict);
         }
-        if (va_type == VIDEO_ACCELERATION_ANY)
-        {
-            if (!accel_list.empty())
-                accel_list = ",";  // add no-acceleration case to the end of the list
-        }
+        if (!accel_list.empty())
+            accel_list += ",";  // add no-acceleration case to the end of the list
         CV_LOG_DEBUG(NULL, "FFMPEG: allowed acceleration types (" << getVideoAccelerationName(va_type) << "): '" << accel_list << "'");
 
-        if (accel_list.empty() && va_type != VIDEO_ACCELERATION_NONE && va_type != VIDEO_ACCELERATION_ANY)
-        {
-            // broke stream
-            std::string tmp;
-            s_stream_ >> tmp;
-        }
-        else
-        {
-            s_stream_ = std::istringstream(accel_list);
-        }
+        s_stream_ = std::istringstream(accel_list);
 
         if (va_type != VIDEO_ACCELERATION_NONE)
         {
