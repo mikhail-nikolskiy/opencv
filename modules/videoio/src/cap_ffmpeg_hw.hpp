@@ -1,4 +1,4 @@
-// This file is part of OpenCV project.
+// This file is part of OpenCV project.HAVE_D3D11
 // It is subject to the license terms in the LICENSE file found in the top-level directory
 // of this distribution and at http://opencv.org/license.html.
 //
@@ -14,22 +14,43 @@
 #define D3D11_NO_HELPERS
 #include <d3d11.h>
 #include <codecvt>
+#include "opencv2/core/directx.hpp"
+#ifdef HAVE_OPENCL
+#include <CL/cl_d3d11.h>
 #endif
+#endif // HAVE_D3D11
 
 #ifdef HAVE_VA
 #include <va/va_backend.h>
+#ifdef HAVE_VA_INTEL
+#include "opencv2/core/va_intel.hpp"
+#ifdef HAVE_VA_INTEL_OLD_HEADER
+#include <CL/va_ext.h>
+#else
+#include <CL/cl_va_api_media_sharing_intel.h>
 #endif
+#endif
+#endif // HAVE_VA
 
+#ifdef HAVE_OPENCL
+#include "opencv2/core/opencl/runtime/opencl_core.hpp"
+#include "opencv2/core.hpp"
+#include "opencv2/core/ocl.hpp"
+#endif // HAVE_OPENCL
+
+// FFMPEG "C" headers
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
-
 #include <libavutil/hwcontext.h>
 #ifdef HAVE_D3D11
 #include <libavutil/hwcontext_d3d11va.h>
 #endif
 #ifdef HAVE_VA
 #include <libavutil/hwcontext_vaapi.h>
+#endif
+#ifdef HAVE_MFX
+#include <libavutil/hwcontext_qsv.h>
 #endif
 }
 
@@ -70,7 +91,7 @@ std::string getDecoderConfiguration(VideoAccelerationType va_type, AVDictionary 
     case VIDEO_ACCELERATION_ANY: return "d3d11va";
     case VIDEO_ACCELERATION_D3D11: return "d3d11va";
     case VIDEO_ACCELERATION_VAAPI: return "";
-    case VIDEO_ACCELERATION_MFX: return "";
+    case VIDEO_ACCELERATION_MFX: return "qsv";
     }
     return "";
 #else
@@ -258,21 +279,187 @@ bool hw_check_device(AVBufferRef* ctx, AVHWDeviceType hw_type, const std::string
     return ret;
 }
 
+#ifdef HAVE_VA
+static VADisplay hw_get_va_display(AVHWDeviceContext* hw_device_ctx) {
+    if (hw_device_ctx->type == AV_HWDEVICE_TYPE_VAAPI) {
+        return ((AVVAAPIDeviceContext*)hw_device_ctx->hwctx)->display;
+    }
+#ifdef HAVE_MFX
+    else if (hw_device_ctx->type == AV_HWDEVICE_TYPE_QSV) {
+        mfxSession session = ((AVQSVDeviceContext*)hw_device_ctx->hwctx)->session;
+        mfxHDL hdl = NULL;
+        MFXVideoCORE_GetHandle(session, MFX_HANDLE_VA_DISPLAY, &hdl);
+        return (VADisplay)hdl;
+    }
+#endif
+    return NULL;
+}
+
+static VASurfaceID hw_get_va_surface(AVFrame* picture) {
+    if (picture->format == AV_PIX_FMT_VAAPI) {
+        return (VASurfaceID)(size_t)picture->data[3]; // As defined by AV_PIX_FMT_VAAPI
+    }
+#ifdef HAVE_MFX
+    else if (picture->format == AV_PIX_FMT_QSV) {
+        mfxFrameSurface1* surface = (mfxFrameSurface1*)picture->data[3]; // As defined by AV_PIX_FMT_QSV
+        return *(VASurfaceID*)surface->Data.MemId;
+    }
+#endif
+    return VA_INVALID_SURFACE;
+}
+#endif // HAVE_VA
+
+#ifdef HAVE_D3D11
+static ID3D11Device* hw_get_d3d11_device(AVHWDeviceContext* hw_device_ctx) {
+    if (hw_device_ctx->type == AV_HWDEVICE_TYPE_D3D11VA) {
+        return ((AVD3D11VADeviceContext*)hw_device_ctx->hwctx)->device;
+    }
+#ifdef HAVE_MFX
+    else if (hw_device_ctx->type == AV_HWDEVICE_TYPE_QSV) {
+        mfxSession session = ((AVQSVDeviceContext*)hw_device_ctx->hwctx)->session;
+        mfxHDL hdl = NULL;
+        MFXVideoCORE_GetHandle(session, MFX_HANDLE_D3D11_DEVICE, &hdl);
+        return (ID3D11Device*)hdl;
+    }
+#endif
+    return NULL;
+}
+
+static ID3D11Texture2D* hw_get_d3d11_texture(AVFrame* picture) {
+#ifdef HAVE_MFX
+    if (picture->format == AV_PIX_FMT_QSV) {
+        mfxFrameSurface1* surface = (mfxFrameSurface1*)picture->data[3]; // As defined by AV_PIX_FMT_QSV
+        return (ID3D11Texture2D*)surface->Data.MemId;
+    }
+#endif
+    return NULL;
+}
+#endif // HAVE_D3D11
+
+static void hw_bind_opencl(AVBufferRef* ctx) {
+    if (!ctx)
+        return;
+    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext*)ctx->data;
+    if (!hw_device_ctx)
+        return;
+#ifdef HAVE_VA_INTEL
+    VADisplay va_display = hw_get_va_display(hw_device_ctx);
+    if (va_display) {
+        va_intel::ocl::initializeContextFromVA(va_display);
+    }
+#endif
+#if defined(HAVE_D3D11) && defined(HAVE_OPENCL)
+    //TODO check if need to do device->AddRef() or OpenCL context does that automatically
+    ID3D11Device* device = hw_get_d3d11_device(hw_device_ctx);
+    if (device) {
+        device->AddRef();
+        directx::ocl::initializeContextFromD3D11Device(device);
+    }
+#endif
+}
+
+static std::pair<AVHWDeviceType, void*> hw_query_opencl_context(ocl::OpenCLExecutionContext& ocl_context) {
+    if (ocl_context.empty())
+        return { AV_HWDEVICE_TYPE_NONE, NULL };
+    static struct {
+        AVHWDeviceType hw_type;
+        intptr_t cl_property;
+    } cl_media_properties[] = {
+#ifdef HAVE_VA_INTEL
+        { AV_HWDEVICE_TYPE_VAAPI, CL_CONTEXT_VA_API_DISPLAY_INTEL }
+#endif
+#ifdef HAVE_D3D11
+        { AV_HWDEVICE_TYPE_D3D11VA, CL_CONTEXT_D3D11_DEVICE_KHR }
+#endif
+    };
+    cl_context context = (cl_context)ocl_context.getContext().ptr();
+    ::size_t size = 0;
+    clGetContextInfo(context, CL_CONTEXT_PROPERTIES, 0, NULL, &size);
+    std::vector<cl_context_properties> prop(size / sizeof(cl_context_properties));
+    clGetContextInfo(context, CL_CONTEXT_PROPERTIES, size, prop.data(), NULL);
+    for (size_t i = 0; i < prop.size(); i += 2) {
+        for (size_t j = 0; j < sizeof(cl_media_properties) / sizeof(cl_media_properties[0]); j++) {
+            if (prop[i] == cl_media_properties[j].cl_property) {
+                return { cl_media_properties[j].hw_type, (void*)prop[i + 1] };
+            }
+        }
+    }
+    return { AV_HWDEVICE_TYPE_NONE, NULL };
+}
+
+static AVBufferRef* hw_create_device_from_existent(ocl::OpenCLExecutionContext& ocl_context, AVHWDeviceType hw_type) {
+    std::pair<AVHWDeviceType, void*> q = hw_query_opencl_context(ocl_context);
+    if (q.first == AV_HWDEVICE_TYPE_NONE || !q.second)
+        return NULL;
+    AVHWDeviceType base_hw_type = q.first;
+    AVBufferRef* ctx = av_hwdevice_ctx_alloc(base_hw_type);
+    if (!ctx)
+        return NULL;
+    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext*)ctx->data;
+#ifdef HAVE_VA
+    if (base_hw_type == AV_HWDEVICE_TYPE_VAAPI) {
+        ((AVVAAPIDeviceContext*)hw_device_ctx->hwctx)->display = (VADisplay)q.second;
+    }
+#endif
+#ifdef HAVE_D3D11
+    if (base_hw_type == AV_HWDEVICE_TYPE_D3D11VA) {
+        ((AVD3D11VADeviceContext*)hw_device_ctx->hwctx)->device = (ID3D11Device*)q.second;
+    }
+#endif
+    if (av_hwdevice_ctx_init(ctx) < 0) {
+        return NULL;
+    }
+    if (hw_type != base_hw_type) {
+        AVBufferRef* derived_ctx = NULL;
+        av_hwdevice_ctx_create_derived(&derived_ctx, hw_type, ctx, 0);
+        av_buffer_unref(&ctx);
+        return derived_ctx;
+    }
+    return ctx;
+}
+
+static bool hw_check_opencl_context(AVHWDeviceContext* ctx) {
+    ocl::OpenCLExecutionContext& ocl_context = ocl::OpenCLExecutionContext::getCurrentRef();
+    if (!ctx || ocl_context.empty())
+        return false;
+    std::pair<AVHWDeviceType, void*> q = hw_query_opencl_context(ocl_context);
+    AVHWDeviceType hw_type = q.first;
+    if (hw_type == AV_HWDEVICE_TYPE_NONE || q.second == NULL)
+        return false;
+#ifdef HAVE_VA
+    if (hw_type == AV_HWDEVICE_TYPE_VAAPI) {
+        return (hw_get_va_display(ctx) == (VADisplay)q.second);
+    }
+#endif
+#ifdef HAVE_D3D11
+    if (hw_type == AV_HWDEVICE_TYPE_D3D11VA) {
+        return (hw_get_d3d11_device(ctx) == (ID3D11Device*)q.second);
+    }
+#endif
+    return false;
+}
+
 static
 AVBufferRef* hw_create_device(AVHWDeviceType hw_type, int hw_device, const std::string& device_subname) {
     if (AV_HWDEVICE_TYPE_NONE == hw_type)
         return NULL;
 
+    // try create media context on media device attached to OpenCL context
+    ocl::OpenCLExecutionContext& ocl_context = ocl::OpenCLExecutionContext::getCurrentRef();
+    AVBufferRef* hw_device_ctx = hw_create_device_from_existent(ocl_context, hw_type);
+    if (hw_device_ctx) {
+        return hw_device_ctx;
+    }
+
+    // create new media context
     AVHWDeviceType child_type = hw_type;
     if (hw_type == AV_HWDEVICE_TYPE_QSV) {
 #ifdef _WIN32
-        child_type = AV_HWDEVICE_TYPE_DXVA2;
+        child_type = AV_HWDEVICE_TYPE_DXVA2; // D3D11VA;
 #else
         child_type = AV_HWDEVICE_TYPE_VAAPI;
 #endif
     }
-
-    AVBufferRef* hw_device_ctx = NULL;
     char device[128] = "";
     char* pdevice = NULL;
     if (hw_device >= 0 && hw_device < 100000) {
@@ -302,16 +489,20 @@ AVBufferRef* hw_create_device(AVHWDeviceType hw_type, int hw_device, const std::
                 if (derived_ctx)
                     av_buffer_unref(&derived_ctx);
                 CV_LOG_INFO(NULL, "FFMPEG: Failed to create derived video acceleration (av_hwdevice_ctx_create_derived) for " << hw_name << ". Error=" << err);
+                return NULL;
             }
             else
             {
                 CV_LOG_DEBUG(NULL, "FFMPEG: Created derived video acceleration context (av_hwdevice_ctx_create_derived) for " << hw_name);
             }
             av_buffer_unref(&hw_device_ctx);
-            return derived_ctx;
-        } else {
-            return hw_device_ctx;
+            hw_device_ctx = derived_ctx;
         }
+        // if OpenCL context not set yet, create it with binding to media device
+        if (hw_device_ctx && ocl_context.empty() && ocl::useOpenCL()) {
+            hw_bind_opencl(hw_device_ctx);
+        }
+        return hw_device_ctx;
     }
     else
     {
@@ -351,6 +542,25 @@ AVBufferRef* hw_create_frames(struct AVCodecContext* ctx, AVBufferRef *hw_device
         frames_ctx->sw_format = HW_DEFAULT_SW_FORMAT;
     if (frames_ctx->initial_pool_size == 0)
         frames_ctx->initial_pool_size = HW_DEFAULT_POOL_SIZE;
+
+    //AVD3D11VAFramesContext* pFramesHWContext = (AVD3D11VAFramesContext*)frames_ctx->hwctx;
+    //pFramesHWContext->BindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE; // D3D11_BIND_SHADER_RESOURCE; // | D3D11_BIND_DECODER | D3D11_BIND_VIDEO_ENCODER;
+    //pFramesHWContext->MiscFlags |= D3D11_RESOURCE_MISC_SHARED; // D3D11_RESOURCE_MISC_SHARED_NTHANDLE
+
+    // In D3D11 case we need additional texture allocated as single texture (not texture array) because
+    // OpenCL interop with D3D11 doesn't support/work with NV12 sub-texture of texture array.
+    // We set free() callback to release this texture, before av_hwframe_ctx_init() call.
+#ifdef HAVE_D3D11
+    struct D3D11SingleTexture {
+        static void free(struct AVHWFramesContext* ctx) {
+            ID3D11Texture2D* single_texture = (ID3D11Texture2D*)ctx->user_opaque;
+            if (single_texture)
+                single_texture->Release();
+        }
+    };
+    frames_ctx->free = D3D11SingleTexture::free;
+#endif
+
     int res = av_hwframe_ctx_init(hw_frames_ref);
     if (res < 0)
     {
@@ -358,6 +568,26 @@ AVBufferRef* hw_create_frames(struct AVCodecContext* ctx, AVBufferRef *hw_device
         av_buffer_unref(&hw_frames_ref);
         return NULL;
     }
+
+#ifdef HAVE_D3D11
+    if (frames_ctx->device_ctx && AV_HWDEVICE_TYPE_D3D11VA == frames_ctx->device_ctx->type) {
+        ID3D11Texture2D* texture = ((AVD3D11VAFramesContext*)frames_ctx->hwctx)->texture;
+        if (texture) {
+            ID3D11Device* pD3D11Device = nullptr;
+            D3D11_TEXTURE2D_DESC desc = {};
+            texture->GetDevice(&pD3D11Device);
+            texture->GetDesc(&desc);
+            desc.ArraySize = 1;
+            desc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+            desc.MiscFlags |= D3D11_RESOURCE_MISC_SHARED;
+            ID3D11Texture2D* single_texture = nullptr;
+            if (pD3D11Device && SUCCEEDED(pD3D11Device->CreateTexture2D(&desc, NULL, &single_texture))) {
+                frames_ctx->user_opaque = single_texture;
+            }
+        }
+    }
+#endif
+
     return hw_frames_ref;
 }
 
@@ -455,6 +685,84 @@ AVPixelFormat hw_get_format_callback(struct AVCodecContext *ctx, const enum AVPi
     return fmt[0];
 }
 
+// GPU color conversion NV12->BGRA via OpenCL extensions
+bool
+hw_copy_media_to_opencl(AVBufferRef* ctx, AVFrame* picture, cv::OutputArray output) {
+    if (!ctx)
+        return false;
+
+    // check that current OpenCL context initilized with binding to our media context
+    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext*)ctx->data;
+    if (!hw_check_opencl_context(hw_device_ctx))
+        return false;
+
+#ifdef HAVE_VA_INTEL
+    VADisplay va_display = hw_get_va_display(hw_device_ctx);
+    VASurfaceID va_surface = hw_get_va_surface(picture);
+    if (va_display != NULL && va_surface != VA_INVALID_SURFACE) {
+        Size size(picture->width, picture->height);
+        va_intel::convertFromVASurface(va_display, va_surface, size, output);
+        return true;
+    }
+#endif
+
+#ifdef HAVE_D3D11
+    ID3D11Texture2D* texture = hw_get_d3d11_texture(picture);
+    if (texture) {
+        directx::convertFromD3D11Texture2D(texture, output);
+        return true;
+    }
+    if (hw_device_ctx->type == AV_HWDEVICE_TYPE_D3D11VA && picture->format == AV_PIX_FMT_D3D11) {
+        ID3D11Texture2D* arrayTexture = (ID3D11Texture2D*)picture->data[0]; // As defined by AV_PIX_FMT_D3D11
+        int subresource = (intptr_t)picture->data[1]; // As defined by AV_PIX_FMT_D3D11
+        ID3D11Texture2D* singleTexture = (ID3D11Texture2D*)((AVHWFramesContext*)(picture->hw_frames_ctx->data))->user_opaque;
+        ID3D11DeviceContext* deviceContext = ((AVD3D11VADeviceContext*)hw_device_ctx->hwctx)->device_context;
+        if (deviceContext && arrayTexture && singleTexture) {
+            // TODO: do we need to protect this block by mutex?
+            // copy GPU sub-texture to GPU texture
+            deviceContext->CopySubresourceRegion(singleTexture, 0, 0, 0, 0, arrayTexture, subresource, NULL);
+            // copy GPU texture to cv::UMat
+            directx::convertFromD3D11Texture2D(singleTexture, output);
+            return true;
+        }
+    }
+#endif
+
+    return false;
+}
+
+// GPU color conversion BGRA->NV12 via OpenCL extensions
+bool hw_copy_opencl_to_media(AVBufferRef* ctx, cv::InputArray input, AVFrame* hw_frame) {
+    if (!ctx)
+        return false;
+    
+    // check that current OpenCL context initilized with binding to our media context
+    AVHWDeviceContext* hw_device_ctx = (AVHWDeviceContext*)ctx->data;
+    if (!hw_check_opencl_context(hw_device_ctx))
+        return false;
+
+#ifdef HAVE_VA_INTEL
+    VADisplay va_display = hw_get_va_display(hw_device_ctx);
+    VASurfaceID va_surface = hw_get_va_surface(hw_frame);
+    if (va_display != NULL && va_surface != VA_INVALID_SURFACE) {
+        Size size(hw_frame->width, hw_frame->height);
+        va_intel::convertToVASurface(va_display, input, va_surface, size);
+        return true;
+    }
+#endif
+
+#ifdef HAVE_D3D11
+    ID3D11Device* pD3D11Device = hw_get_d3d11_device(hw_device_ctx);
+    ID3D11Texture2D* pD3D11Texture = hw_get_d3d11_texture(hw_frame);
+    if (pD3D11Device && pD3D11Texture) {
+        directx::convertToD3D11Texture2D(input, pD3D11Texture);
+        return true;
+    }
+#endif
+
+    return false;
+}
+
 static
 VideoAccelerationType hw_type_to_va_type(AVHWDeviceType hw_type) {
     struct HWTypeFFMPEG {
@@ -486,7 +794,7 @@ public:
         if (va_type == VIDEO_ACCELERATION_ANY)
         {
             if (!accel_list.empty())
-                accel_list = ",";  // add no-acceleration case to the end of the list
+                accel_list += ",";  // add no-acceleration case to the end of the list
         }
         CV_LOG_DEBUG(NULL, "FFMPEG: allowed acceleration types (" << getVideoAccelerationName(va_type) << "): '" << accel_list << "'");
 

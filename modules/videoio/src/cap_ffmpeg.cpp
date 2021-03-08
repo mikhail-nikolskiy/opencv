@@ -92,8 +92,17 @@ public:
         unsigned char* data = 0;
         int step=0, width=0, height=0, cn=0;
 
-        if (!ffmpegCapture ||
-           !icvRetrieveFrame_FFMPEG_p(ffmpegCapture, &data, &step, &width, &height, &cn))
+        if (!ffmpegCapture)
+            return false;
+
+        // if UMat, try GPU to GPU copy using OpenCL extensions
+        if (frame.isUMat()) {
+            if (ffmpegCapture->retrieveHWFrame(frame)) {
+                return true;
+            }
+        }
+
+        if (!icvRetrieveFrame_FFMPEG_p(ffmpegCapture, &data, &step, &width, &height, &cn))
             return false;
 
         cv::Mat tmp(height, width, CV_MAKETYPE(CV_8U, cn), data, step);

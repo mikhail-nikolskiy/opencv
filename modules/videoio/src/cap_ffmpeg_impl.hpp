@@ -1,4 +1,4 @@
-/*M///////////////////////////////////////////////////////////////////////////////////////
+ /*M///////////////////////////////////////////////////////////////////////////////////////
 //
 //  IMPORTANT: READ BEFORE DOWNLOADING, COPYING, INSTALLING OR USING.
 //
@@ -476,6 +476,7 @@ struct CvCapture_FFMPEG
     bool setProperty(int, double);
     bool grabFrame();
     bool retrieveFrame(int, unsigned char** data, int* step, int* width, int* height, int* cn);
+    bool retrieveHWFrame(cv::OutputArray output);
     void rotateFrame(cv::Mat &mat) const;
 
     void init();
@@ -572,7 +573,7 @@ void CvCapture_FFMPEG::init()
     memset(&packet_filtered, 0, sizeof(packet_filtered));
     av_init_packet(&packet_filtered);
     bsfc = NULL;
-    va_type = cv::VIDEO_ACCELERATION_ANY;
+    va_type = cv::VIDEO_ACCELERATION_NONE;
     hw_device = -1;
 }
 
@@ -1474,6 +1475,19 @@ bool CvCapture_FFMPEG::retrieveFrame(int, unsigned char** data, int* step, int* 
     }
 #endif
     return true;
+}
+
+bool CvCapture_FFMPEG::retrieveHWFrame(cv::OutputArray output)
+{
+    //CV_INSTRUMENT_REGION();
+
+    // check that we have HW frame in GPU memory
+    if (!picture || !picture->hw_frames_ctx) {
+        return false;
+    }
+
+    // GPU color conversion NV12->BGRA, from GPU media buffer to GPU OpenCL buffer
+    return hw_copy_media_to_opencl(video_st->codec->hw_device_ctx, picture, output);
 }
 
 double CvCapture_FFMPEG::getProperty( int property_id ) const
