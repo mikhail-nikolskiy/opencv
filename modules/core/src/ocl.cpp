@@ -873,7 +873,7 @@ protected:
         for (int i = 0; i < ndevices; i++)
         {
             ocl::Device d = context_.device(i);
-            if (d.getImpl() == device.getImpl())
+            if (d.ptr() == device.ptr())
             {
                 device_ = i;
                 found = true;
@@ -1188,6 +1188,13 @@ bool haveOpenCL()
         g_isOpenCLInitialized = true;
     }
     return g_isOpenCLAvailable;
+}
+
+// TODO. Function simular to useOpenCL() but doesn't create context if useOpenCL<0
+int useOpenCLFlag()
+{
+    CoreTLSData& data = getCoreTlsData();
+    return data.useOpenCL;
 }
 
 bool useOpenCL()
@@ -3097,6 +3104,22 @@ CV_EXPORTS bool useSVM(UMatUsageFlags usageFlags)
 } // namespace cv::ocl::svm
 #endif // HAVE_OPENCL_SVM
 
+void* Context::getProperty(long propertyId) const {
+    if (p == NULL)
+        return nullptr;
+    ::size_t size = 0;
+    if (CL_SUCCESS == clGetContextInfo(p->handle, CL_CONTEXT_PROPERTIES, 0, NULL, &size)) {
+        std::vector<cl_context_properties> prop(size / sizeof(cl_context_properties));
+        if (CL_SUCCESS == clGetContextInfo(p->handle, CL_CONTEXT_PROPERTIES, size, prop.data(), NULL)) {
+            for (size_t i = 0; i < prop.size(); i += 2) {
+                if (prop[i] == propertyId) {
+                    return (void *) prop[i + 1];
+                }
+            }
+        }
+    }
+    return nullptr;
+}
 
 static void get_platform_name(cl_platform_id id, String& name)
 {

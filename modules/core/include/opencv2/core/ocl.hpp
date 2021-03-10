@@ -51,6 +51,7 @@ namespace cv { namespace ocl {
 
 CV_EXPORTS_W bool haveOpenCL();
 CV_EXPORTS_W bool useOpenCL();
+CV_EXPORTS_W int useOpenCLFlag(); // TODO
 CV_EXPORTS_W bool haveAmdBlas();
 CV_EXPORTS_W bool haveAmdFft();
 CV_EXPORTS_W void setUseOpenCL(bool flag);
@@ -277,6 +278,8 @@ public:
     /** @returns cl_context value */
     void* ptr() const;
 
+    /** @returns Property specified on context creation */
+    void* getProperty(long propertyId) const;
 
     bool useSVM() const;
     void setUseSVM(bool enabled);

@@ -53,8 +53,6 @@ static clCreateFromVA_APIMediaSurfaceINTEL_fn       clCreateFromVA_APIMediaSurfa
 static clEnqueueAcquireVA_APIMediaSurfacesINTEL_fn  clEnqueueAcquireVA_APIMediaSurfacesINTEL  = NULL;
 static clEnqueueReleaseVA_APIMediaSurfacesINTEL_fn  clEnqueueReleaseVA_APIMediaSurfacesINTEL  = NULL;
 
-static bool contextInitialized = false;
-
 #endif // HAVE_VA_INTEL
 
 namespace ocl {
@@ -65,10 +63,8 @@ Context& initializeContextFromVA(VADisplay display, bool tryInterop)
 #if !defined(HAVE_VA)
     NO_VA_SUPPORT_ERROR;
 #else  // !HAVE_VA
-    init_libva();
 
 #   ifdef HAVE_VA_INTEL
-    contextInitialized = false;
     if (tryInterop)
     {
         cl_uint numPlatforms;
@@ -151,8 +147,6 @@ Context& initializeContextFromVA(VADisplay display, bool tryInterop)
 
         if (found >= 0)
         {
-            contextInitialized = true;
-
             cl_platform_id platform = platforms[found];
             std::string platformName = PlatformInfo(&platform).name();
 
@@ -520,7 +514,6 @@ void convertToVASurface(VADisplay display, InputArray src, VASurfaceID surface, 
 #if !defined(HAVE_VA)
     NO_VA_SUPPORT_ERROR;
 #else  // !HAVE_VA
-    init_libva();
 
     const int stype = CV_8UC3;
 
@@ -531,7 +524,8 @@ void convertToVASurface(VADisplay display, InputArray src, VASurfaceID surface, 
     CV_Assert(srcSize.width == size.width && srcSize.height == size.height);
 
 #ifdef HAVE_VA_INTEL
-    if (contextInitialized)
+    ocl::OpenCLExecutionContext& ocl_context = ocl::OpenCLExecutionContext::getCurrentRef();
+    if (!ocl_context.empty() && display == ocl_context.getContext().getProperty(CL_CONTEXT_VA_API_DISPLAY_INTEL))
     {
         UMat u = src.getUMat();
 
@@ -541,9 +535,7 @@ void convertToVASurface(VADisplay display, InputArray src, VASurfaceID surface, 
 
         cl_mem clBuffer = (cl_mem)u.handle(ACCESS_READ);
 
-        using namespace cv::ocl;
-        Context& ctx = Context::getDefault();
-        cl_context context = (cl_context)ctx.ptr();
+        cl_context context = (cl_context)ocl_context.getContext().ptr();
 
         cl_int status = 0;
 
@@ -554,7 +546,7 @@ void convertToVASurface(VADisplay display, InputArray src, VASurfaceID surface, 
         if (status != CL_SUCCESS)
             CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clCreateFromVA_APIMediaSurfaceINTEL failed (UV plane)");
 
-        cl_command_queue q = (cl_command_queue)Queue::getDefault().ptr();
+        cl_command_queue q = (cl_command_queue)ocl_context.getQueue().ptr();
 
         cl_mem images[2] = { clImageY, clImageUV };
         status = clEnqueueAcquireVA_APIMediaSurfacesINTEL(q, 2, images, 0, NULL, NULL);
@@ -580,6 +572,7 @@ void convertToVASurface(VADisplay display, InputArray src, VASurfaceID surface, 
     else
 # endif // HAVE_VA_INTEL
     {
+        init_libva();
         Mat m = src.getMat();
 
         // TODO Add support for roi
@@ -626,7 +619,6 @@ void convertFromVASurface(VADisplay display, VASurfaceID surface, Size size, Out
 #if !defined(HAVE_VA)
     NO_VA_SUPPORT_ERROR;
 #else  // !HAVE_VA
-    init_libva();
 
     const int dtype = CV_8UC3;
 
@@ -634,7 +626,8 @@ void convertFromVASurface(VADisplay display, VASurfaceID surface, Size size, Out
     dst.create(size, dtype);
 
 #ifdef HAVE_VA_INTEL
-    if (contextInitialized)
+    ocl::OpenCLExecutionContext& ocl_context = ocl::OpenCLExecutionContext::getCurrentRef();
+    if (!ocl_context.empty() && display == ocl_context.getContext().getProperty(CL_CONTEXT_VA_API_DISPLAY_INTEL))
     {
         UMat u = dst.getUMat();
 
@@ -644,9 +637,7 @@ void convertFromVASurface(VADisplay display, VASurfaceID surface, Size size, Out
 
         cl_mem clBuffer = (cl_mem)u.handle(ACCESS_WRITE);
 
-        using namespace cv::ocl;
-        Context& ctx = Context::getDefault();
-        cl_context context = (cl_context)ctx.ptr();
+        cl_context context = (cl_context)ocl_context.getContext().ptr();
 
         cl_int status = 0;
 
@@ -657,7 +648,7 @@ void convertFromVASurface(VADisplay display, VASurfaceID surface, Size size, Out
         if (status != CL_SUCCESS)
             CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clCreateFromVA_APIMediaSurfaceINTEL failed (UV plane)");
 
-        cl_command_queue q = (cl_command_queue)Queue::getDefault().ptr();
+        cl_command_queue q = (cl_command_queue)ocl_context.getQueue().ptr();
 
         cl_mem images[2] = { clImageY, clImageUV };
         status = clEnqueueAcquireVA_APIMediaSurfacesINTEL(q, 2, images, 0, NULL, NULL);
@@ -683,6 +674,7 @@ void convertFromVASurface(VADisplay display, VASurfaceID surface, Size size, Out
     else
 # endif // HAVE_VA_INTEL
     {
+        init_libva();
         Mat m = dst.getMat();
 
         // TODO Add support for roi
