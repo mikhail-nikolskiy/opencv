@@ -15,7 +15,8 @@ const char* keys =
 "{ o output   |        | output video file, or specify 'null' to measure decoding without rendering to screen}"
 "{ backend    | any    | VideoCapture and VideoWriter backend, valid values: 'any', 'ffmpeg', 'msmf', 'gstreamer' }"
 "{ accel      | any    | GPU Video Acceleration, valid values: 'none', 'any', 'd3d11', 'vaapi', 'mfx' }"
-"{ device     | -1     | Video Acceleration device (GPU) index (-1 means default device) }"
+"{ va_device  | -1     | Video Acceleration device (GPU) index according to d3d11/vaapi/mfx enumeration (-1 means default device) }"
+"{ cl_device  |        | OpenCL device in format [Platform]:[DeviceType]:[DeviceName>]:[Options], ex :iGPU:0:video }"
 "{ out_w      |        | output width (resize by calling cv::resize) }"
 "{ out_h      |        | output height (resize by calling cv::resize) }"
 "{ bitwise_not| false  | apply simple image processing - bitwise_not pixels by calling cv::bitwise_not }"
@@ -89,15 +90,43 @@ int main(int argc, char** argv)
     string infile = cmd.get<string>("i");
     string outfile = cmd.get<string>("o");
     string codec = cmd.get<string>("codec");
-    int device = cmd.get<int>("device");
+    string cl_device = cmd.get<string>("cl_device");
+    int va_device = cmd.get<int>("va_device");
     int out_w = cmd.get<int>("out_w");
     int out_h = cmd.get<int>("out_h");
     bool use_opencl = cmd.get<bool>("opencl");
     bool bitwise_not = cmd.get<bool>("bitwise_not");
 
+    if (!cl_device.empty()) {
+        // Create OpenCL context
+        auto ocl_context = cv::ocl::Context::create(cl_device);
+        // Create OpenCL queue and bind to current thread
+        cv::ocl::OpenCLExecutionContext::create(ocl_context, ocl_context.device(0)).bind();
+    }
+
+#if 0
+    if (!platform_str.empty() && use_opencl) {
+        std::vector<cv::ocl::PlatformInfo> platforms;
+        cv::ocl::getPlatfomsInfo(platforms);
+        for (size_t i = 0; i < platforms.size(); i++) {
+            const cv::ocl::PlatformInfo *platform = &platforms[i];
+
+            std::cout << "Platform Name: " << platform->name() << endl;
+            if (platform->name().find(platform_str) == std::string::npos)
+                continue;
+
+            cv::ocl::Device cldevice;
+            platform->getDevice(cldevice, device);
+            auto clcontext = cv::ocl::OpenCLExecutionContext::create(cv::ocl::Context::fromDevice(cldevice), cldevice);
+            clcontext.bind();
+            device = -1;
+        }
+    }
+#endif
+
     cv::VideoCaptureAPIs backend = cv::CAP_ANY;
     string backend_str = cmd.get<string>("backend");
-    for (size_t i = 0; i < sizeof(backend_strings)/sizeof(backend_strings[0]); i++) {
+    for (size_t i = 0; i < sizeof(backend_strings) / sizeof(backend_strings[0]); i++) {
         if (backend_str == backend_strings[i].str) {
             backend = backend_strings[i].backend;
             break;
@@ -117,7 +146,7 @@ int main(int argc, char** argv)
 
     VideoCapture capture(infile, backend, {
             CAP_PROP_HW_ACCELERATION, (int)accel,
-            CAP_PROP_HW_DEVICE, device
+            CAP_PROP_HW_DEVICE, va_device
     });
     if (!capture.isOpened()) {
         cerr << "Failed to open VideoCapture" << endl;
@@ -144,7 +173,7 @@ int main(int argc, char** argv)
         }
         writer = VideoWriter(outfile, backend, fourcc, fps, frameSize, {
                 VIDEOWRITER_PROP_HW_ACCELERATION, (int)accel,
-                VIDEOWRITER_PROP_HW_DEVICE, device
+                VIDEOWRITER_PROP_HW_DEVICE, va_device
         });
         if (!writer.isOpened()) {
             cerr << "Failed to open VideoWriter" << endl;
@@ -159,6 +188,10 @@ int main(int argc, char** argv)
                 break;
             }
         }
+    }
+
+    if (use_opencl) {
+        cout << "Using OpenCL on device: " << ocl::OpenCLExecutionContext::getCurrent().getDevice().name() << endl;
     }
 
     cout << "\nStarting frame loop. Press ESC to exit\n";
