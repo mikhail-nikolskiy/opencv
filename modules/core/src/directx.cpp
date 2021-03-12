@@ -47,7 +47,10 @@
 #include "opencl_kernels_core.hpp"
 
 #ifdef HAVE_DIRECTX
+#pragma comment(lib, "dxgi")
+#pragma comment(lib, "d3d11")
 #include <vector>
+#include <dxgi1_2.h>
 #include "directx.inc.hpp"
 #include "directx.hpp"
 #else // HAVE_DIRECTX
@@ -421,6 +424,75 @@ using namespace internal;
 
 namespace ocl {
 
+Context createOpenCLAndD3D11Context(void* /*cl_device_id*/ device) {
+#if !defined(HAVE_DIRECTX)
+    NO_DIRECTX_SUPPORT_ERROR;
+#elif !defined(HAVE_OPENCL)
+    NO_OPENCL_SUPPORT_ERROR;
+#else
+    cl_device_id dev = static_cast<cl_device_id>(device);
+    cl_int status;
+    cl_platform_id platform = NULL;
+    status = clGetDeviceInfo(dev, CL_DEVICE_PLATFORM, sizeof(cl_platform_id), &platform, NULL);
+    if (status != CL_SUCCESS)
+        CV_Error(cv::Error::OpenCLInitError, "DirectX-OpenCL: Can't get platform from device");
+    size_t exts_len;
+    status = clGetPlatformInfo(platform, CL_PLATFORM_EXTENSIONS, 0, NULL, &exts_len);
+    if (status != CL_SUCCESS)
+        CV_Error(cv::Error::OpenCLInitError, "DirectX-OpenCL: Can't get length of CL_PLATFORM_EXTENSIONS");
+    std::vector<char> extensions(exts_len + 1);
+    status = clGetPlatformInfo(platform, CL_PLATFORM_EXTENSIONS, exts_len, static_cast<void*>(extensions.data()), NULL);
+    if (status != CL_SUCCESS)
+        CV_Error(cv::Error::OpenCLInitError, "DirectX-OpenCL: No available CL_PLATFORM_EXTENSIONS");
+    if (std::string(extensions.begin(), extensions.end()).find("cl_khr_d3d11_sharing") == std::string::npos)
+        CV_Error(cv::Error::OpenCLInitError, "DirectX-OpenCL: Platform doesn't support extension 'cl_khr_d3d11_sharing'");
+
+    // Enumerate D3D11 devices
+    IDXGIFactory2* pDXGIFactory = NULL;
+    if (FAILED(CreateDXGIFactory(__uuidof(IDXGIFactory2), (void**)&pDXGIFactory))) {
+        CV_Error(cv::Error::OpenCLInitError, "DirectX-OpenCL: Failed to create DXGIFactory");
+    }
+    UINT i = 0;
+    IDXGIAdapter* pAdapter = NULL;
+    while (SUCCEEDED(pDXGIFactory->EnumAdapters(i, &pAdapter))) {
+        ID3D11Device* pD3D11Device = NULL;
+        UINT flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+        if (SUCCEEDED(D3D11CreateDevice(pAdapter, D3D_DRIVER_TYPE_UNKNOWN, NULL, flags, NULL, 0, D3D11_SDK_VERSION, &pD3D11Device, NULL, NULL)))
+        {
+            cl_uint numDevices = 0;
+            cl_device_id device2 = NULL;
+            clGetDeviceIDsFromD3D11KHR_fn clGetDeviceIDsFromD3D11KHR = (clGetDeviceIDsFromD3D11KHR_fn)
+                clGetExtensionFunctionAddressForPlatform(platform, "clGetDeviceIDsFromD3D11KHR");
+            if (clGetDeviceIDsFromD3D11KHR && clGetDeviceIDsFromD3D11KHR(platform, CL_D3D11_DEVICE_KHR, pD3D11Device,
+                CL_PREFERRED_DEVICES_FOR_D3D11_KHR, 1, &device2, &numDevices) == CL_SUCCESS && numDevices > 0)
+            {
+                if (device2 == device) { // D3D11 device compatible with OpenCL device (same physical device)
+                    cl_context_properties properties[] = {
+                            CL_CONTEXT_PLATFORM, (cl_context_properties)platform,
+                            CL_CONTEXT_D3D11_DEVICE_KHR, (cl_context_properties)(pD3D11Device),
+                            CL_CONTEXT_INTEROP_USER_SYNC, CL_FALSE,
+                            NULL, NULL
+                    };
+                    cl_context context = clCreateContext(properties, 1, &dev, NULL, NULL, &status);
+                    if (status == CL_SUCCESS) {
+                        pAdapter->Release();
+                        pDXGIFactory->Release();
+                        // TODO: handle pD3D11Device->Release();
+                        std::string platformName = PlatformInfo(&platform).name();
+                        auto clExecCtx = OpenCLExecutionContext::create(platformName, platform, context, device);
+                        return clExecCtx.getContext();
+                    }
+                }
+            }
+            pD3D11Device->Release();
+        }
+        pAdapter->Release();
+    }
+    pDXGIFactory->Release();
+    CV_Error(cv::Error::OpenCLInitError, "Can't find DirectX device associated with OpenCL device");
+#endif
+}
+
 Context& initializeContextFromD3D11Device(ID3D11Device* pD3D11Device)
 {
     CV_UNUSED(pD3D11Device);
@@ -654,6 +726,7 @@ Context& initializeContextFromD3D11Device(ID3D11Device* pD3D11Device)
         throw;
     }
     clExecCtx.bind();
+    //getImpl().device = pD3D11Device;
     return const_cast<Context&>(clExecCtx.getContext());
 #endif
 }

@@ -16,7 +16,7 @@ const char* keys =
 "{ backend    | any    | VideoCapture and VideoWriter backend, valid values: 'any', 'ffmpeg', 'msmf', 'gstreamer' }"
 "{ accel      | any    | GPU Video Acceleration, valid values: 'none', 'any', 'd3d11', 'vaapi', 'mfx' }"
 "{ va_device  | -1     | Video Acceleration device (GPU) index according to d3d11/vaapi/mfx enumeration (-1 means default device) }"
-"{ cl_device  |        | OpenCL device in format [Platform]:[DeviceType]:[DeviceName>]:[Options], ex :iGPU:0:video }"
+"{ cl_device  |        | OpenCL device in format [Platform]:[DeviceType]:[DeviceName>]:[Options], ex Intel:GPU:0:video }"
 "{ out_w      |        | output width (resize by calling cv::resize) }"
 "{ out_h      |        | output height (resize by calling cv::resize) }"
 "{ bitwise_not| false  | apply simple image processing - bitwise_not pixels by calling cv::bitwise_not }"
@@ -103,26 +103,6 @@ int main(int argc, char** argv)
         // Create OpenCL queue and bind to current thread
         cv::ocl::OpenCLExecutionContext::create(ocl_context, ocl_context.device(0)).bind();
     }
-
-#if 0
-    if (!platform_str.empty() && use_opencl) {
-        std::vector<cv::ocl::PlatformInfo> platforms;
-        cv::ocl::getPlatfomsInfo(platforms);
-        for (size_t i = 0; i < platforms.size(); i++) {
-            const cv::ocl::PlatformInfo *platform = &platforms[i];
-
-            std::cout << "Platform Name: " << platform->name() << endl;
-            if (platform->name().find(platform_str) == std::string::npos)
-                continue;
-
-            cv::ocl::Device cldevice;
-            platform->getDevice(cldevice, device);
-            auto clcontext = cv::ocl::OpenCLExecutionContext::create(cv::ocl::Context::fromDevice(cldevice), cldevice);
-            clcontext.bind();
-            device = -1;
-        }
-    }
-#endif
 
     cv::VideoCaptureAPIs backend = cv::CAP_ANY;
     string backend_str = cmd.get<string>("backend");

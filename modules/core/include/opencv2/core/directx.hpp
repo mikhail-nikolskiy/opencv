@@ -102,6 +102,12 @@ CV_EXPORTS Context& initializeContextFromDirect3DDevice9Ex(IDirect3DDevice9Ex* p
 //! @return Returns reference to OpenCL Context
 CV_EXPORTS Context& initializeContextFromDirect3DDevice9(IDirect3DDevice9* pDirect3DDevice9);
 
+//! @brief Creates OpenCL context and D3D11 context on specified OpenCL device
+//
+//! @param device - OpenCL device (cl_device_id)
+//! @return Returns reference to OpenCL Context
+CV_EXPORTS Context createOpenCLAndD3D11Context(void* /*cl_device_id*/ device);
+
 //! @}
 
 } // namespace cv::directx::ocl

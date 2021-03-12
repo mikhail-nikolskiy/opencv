@@ -115,6 +115,7 @@
 
 #ifdef HAVE_DIRECTX
 #include "directx.hpp"
+#include "opencv2/core/directx.hpp"
 #endif
 
 #ifdef HAVE_OPENCL_SVM
@@ -2494,20 +2495,22 @@ public:
         if (d == NULL)
             return NULL;
 
-        std::vector<cl_context_properties> props;
         if (!options.empty()) {
-            if (options == "video") {
 #if defined(HAVE_DIRECTX)
-                directx::
-#elif defined(HAVE_VA_INTEL)
-                props = cv::va_intel::ocl::create_va_display(d);
-#endif
-            } else {
-                return NULL;
+            if (options == "video") {
+                Context ctx = directx::ocl::createOpenCLAndD3D11Context(d);
+                if (ctx.p) {
+                    impl = ctx.p;
+                    impl->addref();
+                    return impl;
+                }
             }
+#endif
+            return NULL;
         }
 
         impl = new Impl(configuration);
+
         try
         {
             impl->createFromDevice(d);
@@ -2587,7 +2590,8 @@ public:
     void setDefault()
     {
         CV_TRACE_FUNCTION();
-        cl_device_id d = selectOpenCLDevice();
+        std::string options;
+        cl_device_id d = selectOpenCLDevice(NULL, options);
 
         if (d == NULL)
             return;
