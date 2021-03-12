@@ -2078,20 +2078,23 @@ static void split(const std::string &s, char delim, std::vector<std::string> &el
     }
 }
 
-// Layout: <Platform>:<CPU|GPU|ACCELERATOR|nothing=GPU/CPU>:<deviceName>
+// Layout: <Platform>:<CPU|GPU|ACCELERATOR|nothing=GPU/CPU>:<deviceName>:<options>
 // Sample: AMD:GPU:
 // Sample: AMD:GPU:Tahiti
+// Sample: Intel:GPU::video
 // Sample: :GPU|CPU: = '' = ':' = '::'
 static bool parseOpenCLDeviceConfiguration(const std::string& configurationStr,
-        std::string& platform, std::vector<std::string>& deviceTypes, std::string& deviceNameOrID)
+        std::string& platform, std::vector<std::string>& deviceTypes, std::string& deviceNameOrID, std::string& options)
 {
     std::vector<std::string> parts;
     split(configurationStr, ':', parts);
-    if (parts.size() > 3)
+    if (parts.size() > 4)
     {
         CV_LOG_ERROR(NULL, "OpenCL: Invalid configuration string for OpenCL device: " << configurationStr);
         return false;
     }
+    if (parts.size() > 3)
+        options = parts[3];
     if (parts.size() > 2)
         deviceNameOrID = parts[2];
     if (parts.size() > 1)
@@ -2106,13 +2109,14 @@ static bool parseOpenCLDeviceConfiguration(const std::string& configurationStr,
 }
 
 #if defined WINRT || defined _WIN32_WCE
-static cl_device_id selectOpenCLDevice(const char* configuration = NULL)
+static cl_device_id selectOpenCLDevice(const char* configuration, std::string& device_options)
 {
     CV_UNUSED(configuration)
+    CV_UNUSED(device_options)
     return NULL;
 }
 #else
-static cl_device_id selectOpenCLDevice(const char* configuration = NULL)
+static cl_device_id selectOpenCLDevice(const char* configuration, std::string& device_options)
 {
     std::string platform, deviceName;
     std::vector<std::string> deviceTypes;
@@ -2122,7 +2126,7 @@ static cl_device_id selectOpenCLDevice(const char* configuration = NULL)
 
     if (configuration &&
             (strcmp(configuration, "disabled") == 0 ||
-             !parseOpenCLDeviceConfiguration(std::string(configuration), platform, deviceTypes, deviceName)
+             !parseOpenCLDeviceConfiguration(std::string(configuration), platform, deviceTypes, deviceName, device_options)
             ))
         return NULL;
 
@@ -2484,9 +2488,24 @@ public:
             return impl;
         }
 
-        cl_device_id d = selectOpenCLDevice(configuration.empty() ? NULL : configuration.c_str());
+
+        std::string options;
+        cl_device_id d = selectOpenCLDevice(configuration.empty() ? NULL : configuration.c_str(), options);
         if (d == NULL)
             return NULL;
+
+        std::vector<cl_context_properties> props;
+        if (!options.empty()) {
+            if (options == "video") {
+#if defined(HAVE_DIRECTX)
+                directx::
+#elif defined(HAVE_VA_INTEL)
+                props = cv::va_intel::ocl::create_va_display(d);
+#endif
+            } else {
+                return NULL;
+            }
+        }
 
         impl = new Impl(configuration);
         try
