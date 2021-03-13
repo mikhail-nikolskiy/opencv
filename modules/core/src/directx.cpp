@@ -47,14 +47,17 @@
 #include "opencl_kernels_core.hpp"
 
 #ifdef HAVE_DIRECTX
-#pragma comment(lib, "dxgi")
-#pragma comment(lib, "d3d11")
 #include <vector>
-#include <dxgi1_2.h>
 #include "directx.inc.hpp"
 #include "directx.hpp"
 #else // HAVE_DIRECTX
 #define NO_DIRECTX_SUPPORT_ERROR CV_Error(cv::Error::StsBadFunc, "OpenCV was build without DirectX support")
+#endif
+
+#ifdef HAVE_D3D11
+#include <dxgi1_2.h>
+#pragma comment(lib, "dxgi")
+#pragma comment(lib, "d3d11")
 #endif
 
 #ifndef HAVE_OPENCL
@@ -425,7 +428,7 @@ using namespace internal;
 namespace ocl {
 
 Context createOpenCLAndD3D11Context(void* /*cl_device_id*/ device) {
-#if !defined(HAVE_DIRECTX)
+#if !defined(HAVE_D3D11)
     NO_DIRECTX_SUPPORT_ERROR;
 #elif !defined(HAVE_OPENCL)
     NO_OPENCL_SUPPORT_ERROR;
