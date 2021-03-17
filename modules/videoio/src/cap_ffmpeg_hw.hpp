@@ -1,4 +1,4 @@
-// This file is part of OpenCV project.HAVE_D3D11
+// This file is part of OpenCV project.
 // It is subject to the license terms in the LICENSE file found in the top-level directory
 // of this distribution and at http://opencv.org/license.html.
 //
@@ -325,10 +325,9 @@ static void hw_init_opencl(AVBufferRef* ctx) {
     }
 #endif
 #if defined(HAVE_D3D11) && defined(HAVE_OPENCL)
-    TODO check if need to do device->AddRef() or OpenCL context does that automatically
     ID3D11Device* device = hw_get_d3d11_device(hw_device_ctx);
     if (device) {
-        device->AddRef();
+        //device->AddRef();
         directx::ocl::initializeContextFromD3D11Device(device);
     }
 #endif
@@ -351,7 +350,7 @@ static AVBufferRef* hw_create_context_from_opencl(ocl::OpenCLExecutionContext& o
     }
 #endif
 #ifdef HAVE_D3D11
-    ID3D11Device* d3d11device_ocl = ocl_context.getContext().getProperty(CL_CONTEXT_D3D11_DEVICE_KHR);
+    ID3D11Device* d3d11device_ocl = (ID3D11Device*)ocl_context.getContext().getProperty(CL_CONTEXT_D3D11_DEVICE_KHR);
     if (d3d11device_ocl) {
         ctx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
         if (ctx) {
@@ -412,7 +411,7 @@ static AVHWDeviceType hw_check_opencl_va_device(AVHWDeviceContext* ctx) {
         return AV_HWDEVICE_TYPE_VAAPI;
 #endif
 #ifdef HAVE_D3D11
-    ID3D11Device* d3d11device_ocl = ocl_context.getContext().getProperty(CL_CONTEXT_D3D11_DEVICE_KHR);
+    ID3D11Device* d3d11device_ocl = (ID3D11Device*)ocl_context.getContext().getProperty(CL_CONTEXT_D3D11_DEVICE_KHR);
     ID3D11Device* d3d11device_ctx = hw_get_d3d11_device(ctx);
     if (d3d11device_ocl && d3d11device_ocl == d3d11device_ctx)
         return AV_HWDEVICE_TYPE_D3D11VA;
@@ -705,10 +704,10 @@ hw_copy_media_to_opencl(AVBufferRef* ctx, AVFrame* hw_frame, cv::OutputArray out
 
 #ifdef HAVE_D3D11
     if (child_type == AV_HWDEVICE_TYPE_D3D11VA) {
-        if (hw_device_ctx->type == AV_HWDEVICE_TYPE_D3D11VA && picture->format == AV_PIX_FMT_D3D11) {
-            ID3D11Texture2D *arrayTexture = (ID3D11Texture2D *) picture->data[0]; // As defined by AV_PIX_FMT_D3D11
-            int subresource = (intptr_t) picture->data[1]; // As defined by AV_PIX_FMT_D3D11
-            ID3D11Texture2D *singleTexture = (ID3D11Texture2D*)((AVHWFramesContext*)(picture->hw_frames_ctx->data))->user_opaque;
+        if (hw_device_ctx->type == AV_HWDEVICE_TYPE_D3D11VA && hw_frame->format == AV_PIX_FMT_D3D11) {
+            ID3D11Texture2D *arrayTexture = (ID3D11Texture2D *)hw_frame->data[0]; // As defined by AV_PIX_FMT_D3D11
+            int subresource = (intptr_t)hw_frame->data[1]; // As defined by AV_PIX_FMT_D3D11
+            ID3D11Texture2D *singleTexture = (ID3D11Texture2D*)((AVHWFramesContext*)(hw_frame->hw_frames_ctx->data))->user_opaque;
             ID3D11DeviceContext *deviceContext = ((AVD3D11VADeviceContext *) hw_device_ctx->hwctx)->device_context;
             if (deviceContext && arrayTexture && singleTexture) {
                 // TODO: do we need to protect this block by mutex?
@@ -731,6 +730,8 @@ hw_copy_media_to_opencl(AVBufferRef* ctx, AVFrame* hw_frame, cv::OutputArray out
 // GPU color conversion BGRA->NV12 via OpenCL extensions
 static bool
 hw_copy_opencl_to_media(AVBufferRef* ctx, cv::InputArray input, AVFrame* hw_frame) {
+    CV_UNUSED(input);
+    CV_UNUSED(hw_frame);
     if (!ctx)
         return false;
 
@@ -752,12 +753,25 @@ hw_copy_opencl_to_media(AVBufferRef* ctx, cv::InputArray input, AVFrame* hw_fram
 #endif
 
 #ifdef HAVE_D3D11
-    TODO
-    ID3D11Device* pD3D11Device = hw_get_d3d11_device(hw_device_ctx);
-    ID3D11Texture2D* pD3D11Texture = hw_get_d3d11_texture(hw_frame);
-    if (pD3D11Device && pD3D11Texture) {
-        directx::convertToD3D11Texture2D(input, pD3D11Texture);
-        return true;
+    if (child_type == AV_HWDEVICE_TYPE_D3D11VA) {
+        //No D3D11 encoders
+        //if (hw_device_ctx->type == AV_HWDEVICE_TYPE_D3D11VA && hw_frame->format == AV_PIX_FMT_D3D11) {
+        //    ID3D11Texture2D* arrayTexture = (ID3D11Texture2D*)hw_frame->data[0]; // As defined by AV_PIX_FMT_D3D11
+        //    int subresource = (intptr_t)hw_frame->data[1]; // As defined by AV_PIX_FMT_D3D11
+        //    ID3D11Texture2D* singleTexture = (ID3D11Texture2D*)((AVHWFramesContext*)(hw_frame->hw_frames_ctx->data))->user_opaque;
+        //    ID3D11DeviceContext* deviceContext = ((AVD3D11VADeviceContext*)hw_device_ctx->hwctx)->device_context;
+        //    if (deviceContext && arrayTexture && singleTexture) {
+        //        // TODO: do we need to protect this block by mutex?
+        //        // Copy cv::UMat to GPU texture
+        //        directx::convertToD3D11Texture2D(input, singleTexture);
+        //        // Copy GPU texture to GPU sub-texture
+        //        deviceContext->CopySubresourceRegion(arrayTexture, subresource, 0, 0, 0, singleTexture, 0, NULL);
+        //        return true;
+        //    }
+        //}
+        if (hw_device_ctx->type == AV_HWDEVICE_TYPE_QSV) {
+            // TODO: implement after MFX context initialization migrated from D3D9 to D3D11 as "child" type
+        }
     }
 #endif
 
